@@ -576,23 +576,63 @@ function faqToSB(e){
 }
 
 // -- UNIFIED SAVE: writes to Supabase + IndexedDB cache ---------
+// Safety: strip data URLs from video fields before saving to DB/IndexedDB.
+// Phone-recorded videos as base64 can be 20-100MB+ and will silently
+// break PostgREST body limits and bloat IndexedDB.
+function sanitizeMenuForSave(menu){
+  return menu.map(item=>{
+    const clean={...item};
+    // Strip base64 data URLs from video fields (too large to persist in DB)
+    if(clean.videoUrl && clean.videoUrl.startsWith('data:')){
+      console.warn('[Save] Stripping data URL from video for item:', clean.name, '— use Supabase Storage instead');
+      clean.videoUrl='';
+    }
+    // Also clean up triggers that might have stale data
+    if(clean.triggers){
+      clean.triggers=clean.triggers.map(tr=>({...tr}));
+    }
+    return clean;
+  });
+}
+
 async function saveMenu(updatedMenu, showToastFn){
-  await idbSet('stellas_menu', updatedMenu);
+  const cleanMenu=sanitizeMenuForSave(updatedMenu);
+  await idbSet('stellas_menu', cleanMenu);
   const cfg=sbCfg();
   if(cfg){
     // Upsert all items in parallel (fast)
-    await Promise.all(updatedMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
-    console.log('[SB] Menu saved to Supabase:', updatedMenu.length, 'items');
+    try{
+      await Promise.all(cleanMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
+      console.log('[SB] Menu saved to Supabase:', cleanMenu.length, 'items');
+    }catch(e){
+      console.error('[SB] Menu save failed:',e);
+      if(showToastFn) showToastFn('⚠️ Saved locally but Supabase sync failed: '+e.message);
+      return;
+    }
   }
   if(showToastFn) showToastFn('✓ Saved');
 }
 
 async function saveMessages(updatedMsgs, showToastFn){
-  await idbSet('stellas_messages', updatedMsgs);
+  // Strip data URLs from video fields in messages too
+  const cleanMsgs=updatedMsgs.map(m=>{
+    if(m.videoUrl&&m.videoUrl.startsWith('data:')){
+      console.warn('[Save] Stripping data URL from video for message:',m.title);
+      return{...m,videoUrl:''};
+    }
+    return m;
+  });
+  await idbSet('stellas_messages', cleanMsgs);
   const cfg=sbCfg();
   if(cfg){
-    await Promise.all(updatedMsgs.map(m=>sbUpsert('messages', msgToSB(m))));
-    console.log('[SB] Messages saved to Supabase:', updatedMsgs.length);
+    try{
+      await Promise.all(cleanMsgs.map(m=>sbUpsert('messages', msgToSB(m))));
+      console.log('[SB] Messages saved to Supabase:', cleanMsgs.length);
+    }catch(e){
+      console.error('[SB] Messages save failed:',e);
+      if(showToastFn) showToastFn('⚠️ Saved locally but Supabase sync failed');
+      return;
+    }
   }
   if(showToastFn) showToastFn('✓ Saved');
 }
@@ -3046,31 +3086,57 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
 
   async function uploadToSupabase(file){
     if(!sbUrl||!sbKey){
-      // No Supabase -- store as local blob
-      const data=await readFileAsDataURL(file);
-      onUrlChange(data);onFilenameChange('');
-      setUploadMsg('✓ Stored locally (add Supabase in Settings to sync across devices)');
+      setUploadMsg('❌ No Supabase configured. Go to Admin → Settings → Supabase and add your Project URL, Anon Key, and Bucket name. Videos need cloud storage to persist.');
       return;
     }
-    setUploading(true);setUploadMsg('Uploading…');
+    // Warn on very large files
+    const sizeMB=(file.size/(1024*1024)).toFixed(1);
+    if(file.size>100*1024*1024){
+      setUploadMsg('⚠️ File is '+sizeMB+'MB — may be too large. Try a shorter or lower-res video.');
+      return;
+    }
+    setUploading(true);setUploadMsg('Uploading '+sizeMB+'MB…');
     const filename=file.name.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
     try{
+      // Try POST with x-upsert header (creates or replaces)
       const res=await fetch(`${sbUrl}/storage/v1/object/${sbBucket}/${filename}`,{
         method:'POST',
         headers:{'apikey':sbKey,'Authorization':'Bearer '+sbKey,'Content-Type':file.type,'x-upsert':'true'},
         body:file,
       });
-      const d=await res.json();
-      console.log('[Supabase] Upload response:',d);
-      if(d.error){throw new Error(d.error.message||JSON.stringify(d.error));}
+      // Handle non-JSON responses (e.g. CORS errors return empty or HTML)
+      const text=await res.text();
+      let d;
+      try{d=JSON.parse(text);}catch(parseErr){
+        if(!res.ok) throw new Error('HTTP '+res.status+': '+text.substring(0,120));
+        d={};
+      }
+      console.log('[Supabase] Upload response:',d,'status:',res.status);
+      if(!res.ok||d.error){
+        const errMsg=d.error?.message||d.message||d.error||text.substring(0,120);
+        if(res.status===403||/policy|permission|not allowed|unauthorized/i.test(String(errMsg))){
+          throw new Error('Permission denied — In Supabase Dashboard → Storage → "'+sbBucket+'" bucket → Policies, add an INSERT policy for anon users (or use "Give users access to a folder" template and allow all).');
+        }
+        if(res.status===404||/not found|bucket/i.test(String(errMsg))){
+          throw new Error('Bucket "'+sbBucket+'" not found — Create it in Supabase Dashboard → Storage → New Bucket.');
+        }
+        throw new Error(String(errMsg));
+      }
       onFilenameChange(filename);onUrlChange('');
-      setUploadMsg('✓ Uploaded: '+filename);
+      setUploadMsg('✅ Uploaded: '+filename+' ('+sizeMB+'MB)');
     }catch(e){
       console.error('[Supabase] Upload failed:',e);
-      // Fallback to local blob
-      const data=await readFileAsDataURL(file);
-      onUrlChange(data);onFilenameChange('');
-      setUploadMsg('⚠️ Supabase upload failed ('+e.message+') -- stored locally');
+      // Do NOT fall back to data URL for videos — they are too large and will
+      // silently break the menu save (PostgREST body limit / IndexedDB quota).
+      let advice='';
+      if(/Failed to fetch|NetworkError|CORS|network/i.test(e.message)){
+        advice='\n\n🔧 Fix: Check Supabase URL is correct. If using a custom domain, verify CORS allows your site origin.';
+      }else if(/permission|policy|403|denied/i.test(e.message)){
+        advice='\n\n🔧 Fix: Supabase Dashboard → Storage → "'+sbBucket+'" → Policies → add INSERT policy for anon role.';
+      }else{
+        advice='\n\n🔧 Fix: Check Supabase Dashboard → Storage — verify bucket "'+sbBucket+'" exists and allows uploads.';
+      }
+      setUploadMsg('❌ Upload failed: '+e.message+advice);
     }
     setUploading(false);
   }
@@ -3109,7 +3175,7 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
     resolvedUrl&&!videoUrl&&h('div',{style:{fontSize:10,color:'var(--green2)',padding:'4px 8px',background:'rgba(42,90,64,.06)',borderRadius:6,wordBreak:'break-all',marginBottom:4}},
       '🔗 '+resolvedUrl
     ),
-    uploadMsg&&h('div',{style:{fontSize:11,color:'var(--text2)',padding:'4px 8px',background:'rgba(201,168,76,.08)',borderRadius:6,marginBottom:4}},uploadMsg),
+    uploadMsg&&h('div',{style:{fontSize:11,color:'var(--text2)',padding:'6px 10px',background:'rgba(201,168,76,.08)',borderRadius:6,marginBottom:4,whiteSpace:'pre-line',lineHeight:1.5}},uploadMsg),
     resolvedUrl&&h(MediaPreview,{src:resolvedUrl,type:'video',label:'🎬 Video Preview'}),
     h('div',{style:{fontSize:10,color:'var(--text3)',marginTop:4,lineHeight:1.5}},
       sbUrl?'📤 Files auto-upload to Supabase Storage on select.':'💡 Add Supabase in Settings to enable cloud storage.'
@@ -3966,17 +4032,54 @@ function AdminSettingsPanel({showToast}){
     },400);
   }
 
-  // Test Supabase connection by listing the bucket
+  // Test Supabase connection AND upload permissions
   async function testSupabase(){
     if(!sbUrl||!sbKey){showToast('⚠️ Enter Supabase URL and key first');return;}
-    setUploadTest('Testing…');
+    setUploadTest('Testing connection…');
+    const url=sbUrl.trim(),key=sbKey.trim(),bucket=sbBucket.trim()||'videos';
     try{
-      const res=await fetch(`${sbUrl.trim()}/storage/v1/bucket`,{headers:{'apikey':sbKey.trim(),'Authorization':'Bearer '+sbKey.trim()}});
+      // Step 1: Test API connection
+      const res=await fetch(`${url}/storage/v1/bucket`,{headers:{'apikey':key,'Authorization':'Bearer '+key}});
       const d=await res.json();
       console.log('[Supabase] Bucket list response:',d);
-      if(Array.isArray(d)){setUploadTest('✅ Connected! Buckets: '+d.map(b=>b.name).join(', '));}
-      else{setUploadTest('⚠️ Response: '+JSON.stringify(d).substring(0,80));}
-    }catch(e){setUploadTest('❌ Error: '+e.message);}
+      if(!Array.isArray(d)){
+        setUploadTest('❌ API error: '+JSON.stringify(d).substring(0,80));
+        return;
+      }
+      const bucketNames=d.map(b=>b.name);
+      const hasBucket=bucketNames.includes(bucket);
+      if(!hasBucket){
+        setUploadTest('⚠️ Connected, but bucket "'+bucket+'" not found. Available: '+bucketNames.join(', ')+'. Create it in Supabase Dashboard → Storage.');
+        return;
+      }
+
+      // Step 2: Test upload permission with a tiny test file
+      setUploadTest('✅ Connected! Testing upload to "'+bucket+'"…');
+      const testBlob=new Blob(['test'],{type:'text/plain'});
+      const testName='_stellas_upload_test.txt';
+      const upRes=await fetch(`${url}/storage/v1/object/${bucket}/${testName}`,{
+        method:'POST',
+        headers:{'apikey':key,'Authorization':'Bearer '+key,'Content-Type':'text/plain','x-upsert':'true'},
+        body:testBlob,
+      });
+      const upText=await upRes.text();
+      let upD;try{upD=JSON.parse(upText);}catch(e){upD={};}
+      console.log('[Supabase] Upload test response:',upRes.status,upD);
+      if(!upRes.ok||upD.error){
+        const errMsg=upD.error?.message||upD.message||upText.substring(0,100);
+        if(upRes.status===403||/policy|permission/i.test(errMsg)){
+          setUploadTest('⚠️ Connected and bucket found, but UPLOADS ARE BLOCKED. This is why videos don\'t save!\n\n🔧 Fix: Supabase Dashboard → Storage → "'+bucket+'" → Policies → Add INSERT policy for anon role. Example SQL:\n\nCREATE POLICY "Allow public uploads" ON storage.objects FOR INSERT WITH CHECK (bucket_id = \''+bucket+'\');');
+        }else{
+          setUploadTest('⚠️ Connected, but upload test failed: '+errMsg);
+        }
+        return;
+      }
+      // Clean up test file
+      try{await fetch(`${url}/storage/v1/object/${bucket}/${testName}`,{method:'DELETE',headers:{'apikey':key,'Authorization':'Bearer '+key}});}catch(e){}
+      setUploadTest('✅ All good! Connected to Supabase, bucket "'+bucket+'" found, and uploads work. Videos will save correctly.');
+    }catch(e){
+      setUploadTest('❌ Connection error: '+e.message+'\n\n🔧 Check your Project URL is correct (should look like https://xxxxx.supabase.co)');
+    }
   }
 
   function Accord({id,emoji,label,children}){
@@ -4083,7 +4186,7 @@ function AdminSettingsPanel({showToast}){
         '🔗 Video URL format: ',h('code',{style:{fontSize:10}},sbUrl.trim()+'/storage/v1/object/public/'+sbBucket+'/{filename}')
       ),
       h('button',{onClick:testSupabase,className:'btn btn-gold btn-sm',style:{marginBottom:8}},'🔌 Test Connection'),
-      uploadTest&&h('div',{style:{fontSize:12,color:'var(--text2)',padding:'6px 10px',background:'rgba(201,168,76,.08)',borderRadius:8,marginBottom:8}},uploadTest),
+      uploadTest&&h('div',{style:{fontSize:12,color:'var(--text2)',padding:'8px 12px',background:'rgba(201,168,76,.08)',borderRadius:8,marginBottom:8,whiteSpace:'pre-line',lineHeight:1.6}},uploadTest),
       h('div',{style:{fontSize:11,color:'var(--text3)',lineHeight:1.5,padding:'8px 10px',background:'rgba(201,168,76,.06)',borderRadius:8}},
         '💡 Get your keys at ',h('a',{href:'https://supabase.com/dashboard',target:'_blank',style:{color:'var(--green2)'}},'supabase.com/dashboard'),
         ' → Project → Settings → API. Create a Storage bucket named "videos" with public access.'
