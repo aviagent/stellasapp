@@ -576,13 +576,29 @@ function faqToSB(e){
 }
 
 // -- UNIFIED SAVE: writes to Supabase + IndexedDB cache ---------
+function sanitizeMenuForSave(menu){
+  return menu.map(item=>{
+    const clean={...item};
+    if(clean.videoUrl && clean.videoUrl.startsWith('data:')){
+      console.warn('[Save] Stripping data URL from video for item:', clean.name);
+      clean.videoUrl='';
+    }
+    return clean;
+  });
+}
 async function saveMenu(updatedMenu, showToastFn){
-  await idbSet('stellas_menu', updatedMenu);
+  const cleanMenu=sanitizeMenuForSave(updatedMenu);
+  await idbSet('stellas_menu', cleanMenu);
   const cfg=sbCfg();
   if(cfg){
-    // Upsert all items in parallel (fast)
-    await Promise.all(updatedMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
-    console.log('[SB] Menu saved to Supabase:', updatedMenu.length, 'items');
+    try{
+      await Promise.all(cleanMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
+      console.log('[SB] Menu saved to Supabase:', cleanMenu.length, 'items');
+    }catch(e){
+      console.error('[SB] Menu save failed:',e);
+      if(showToastFn) showToastFn('⚠️ Saved locally but Supabase sync failed');
+      return;
+    }
   }
   if(showToastFn) showToastFn('✓ Saved');
 }
@@ -678,10 +694,10 @@ const DEFAULT_MENU=[
 ];
 
 const DEFAULT_MESSAGES=[
-  {id:1,type:'welcome',title:"Welcome to Stella's!",body:"Hi! I'm Anna, your AI host. I'm here to help you explore today's menu, answer questions about ingredients, and make your experience amazing. What can I get for you?",imgUrl:'',active:true},
-  {id:2,type:'goodbye',title:'Thanks for visiting!',body:"It was wonderful having you! We hope to see you again soon. Don't forget to check out our weekly specials -- Anna will always be here to help!",imgUrl:'',active:true},
+  {id:1,type:'welcome',title:"Welcome to Stella's!",body:"Hi! I'm Mia, your AI host. I'm here to help you explore today's menu, answer questions about ingredients, and make your experience amazing. What can I get for you?",imgUrl:'',active:true},
+  {id:2,type:'goodbye',title:'Thanks for visiting!',body:"It was wonderful having you! We hope to see you again soon. Don't forget to check out our weekly specials -- Mia will always be here to help!",imgUrl:'',active:true},
   {id:3,type:'promo',title:'Happy Hour Special 🍹',body:'Enjoy 50% off all cocktails & appetizers every weekday from 3-6pm!',imgUrl:'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&q=80',active:true,slot:'feature1',scheduleStart:'',scheduleEnd:''},
-  {id:4,type:'promo',title:"Chef's Weekly Special ⭐",body:'This week only: Braised Short Rib with truffle mash and charred broccolini. Ask Anna for details!',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',active:true,slot:'feature2',scheduleStart:'',scheduleEnd:''},
+  {id:4,type:'promo',title:"Chef's Weekly Special ⭐",body:'This week only: Braised Short Rib with truffle mash and charred broccolini. Ask Mia for details!',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',active:true,slot:'feature2',scheduleStart:'',scheduleEnd:''},
   {id:5,type:'promo',title:'New Summer Menu 🌿',body:'Fresh seasonal ingredients, new cocktails, and lighter fare for the warm months. Explore our summer picks below!',imgUrl:'https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=400&q=80',active:true,slot:'feature3',scheduleStart:'',scheduleEnd:''},
 ];
 
@@ -773,34 +789,30 @@ function matchMenuItem(rawName, menu) {
   const q = rawName.toLowerCase().trim();
   const items = menu.filter(i => i.visible);
 
-  // 1. Exact name
+  // 1. Exact name match
   let hit = items.find(i => i.name.toLowerCase() === q);
   if (hit) return hit;
 
-  // 2. Name contains query or query contains name
+  // 2. Name includes query
   hit = items.find(i => i.name.toLowerCase().includes(q));
   if (hit) return hit;
+
+  // 3. Query includes name
   hit = items.find(i => q.includes(i.name.toLowerCase()));
   if (hit) return hit;
 
-  // 3. Score ALL fields — name, desc, ingredients, category, trigger keywords
-  const qWords = q.split(/\s+/).filter(w => w.length > 2);
+  // 4. Any word in query matches any word in name or description
+  const queryWords = q.split(/\s+/).filter(w => w.length > 2);
   let bestScore = 0, bestItem = null;
   for (const item of items) {
-    const name = item.name.toLowerCase();
-    const all = (name + ' ' + (item.desc||'') + ' ' + (item.ing||'') + ' ' + (item.cat||'') + ' ' + (item.triggerKeywords||'')).toLowerCase();
+    const haystack = (item.name + ' ' + item.desc + ' ' + (item.ing || '') + ' ' + item.cat).toLowerCase();
     let score = 0;
-    for (const word of qWords) {
-      if (name.includes(word)) score += 5;        // name hit = strongest signal
-      else if (all.includes(word)) score += 2;    // desc/ing/triggers hit
-      // stem match: "burger" ↔ "cheeseburger", "chicken" ↔ "chickens"
-      for (const hw of all.split(/\s+/)) {
-        if (hw.length > 3 && word.length > 3 && hw !== word && (hw.startsWith(word) || word.startsWith(hw))) score += 1;
-      }
+    for (const word of queryWords) {
+      if (haystack.includes(word)) score++;
     }
     if (score > bestScore) { bestScore = score; bestItem = item; }
   }
-  if (bestScore >= 2) return bestItem;
+  if (bestScore > 0) return bestItem;
 
   return null;
 }
@@ -859,7 +871,7 @@ function matchCategory(question, menu) {
     'handheld','handhelds','burger','burgers','sandwich','sandwiches','wrap','wraps','taco','tacos',
     'kids','kids menu','children',
     'gluten free','gluten-free','dairy free','vegan','vegetarian','plant based','plant-based',
-    'what do you have','what is on the menu','show me','what are your',"what's on",
+    'what do you have','what is on the menu','show me','what are your','what\'s on',
     'full menu','everything','all items','whole menu'
   ];
 
@@ -950,38 +962,29 @@ function matchCategory(question, menu) {
 // ==========================================
 function resolveVideoUrl(item) {
   if (!item) return '';
-  console.log('[Video] Resolving for:', item.name, '| videoUrl:', (item.videoUrl||'').substring(0,60), '| videoFilename:', item.videoFilename||'none');
   // 1. Direct blob/data URL uploaded from phone
-  if (item.videoUrl && item.videoUrl.startsWith('data:')) {
-    console.log('[Video] Using local blob data URL');
-    return item.videoUrl;
-  }
+  if (item.videoUrl && item.videoUrl.startsWith('data:')) return item.videoUrl;
   // 2. Already a full https URL
-  if (item.videoUrl && item.videoUrl.startsWith('http')) {
-    console.log('[Video] Using direct https URL:', item.videoUrl.substring(0,80));
-    return item.videoUrl;
-  }
-  // 3. Filename → Supabase public URL
+  if (item.videoUrl && item.videoUrl.startsWith('http')) return item.videoUrl;
+  // 3. Filename → try Supabase public URL first
   const filename = item.videoFilename || (item.videoUrl && !item.videoUrl.startsWith('data:') ? item.videoUrl : '');
   if (filename) {
     const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
     const sbBucket = store.get('stellas_sb_bucket','videos');
     if (sbUrl) {
-      const url = sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+filename;
-      console.log('[Video] Supabase URL:', url);
+      const url = `${sbUrl}/storage/v1/object/public/${sbBucket}/${filename}`;
+      console.log('[Storage] Resolved via Supabase:', url);
       return url;
     }
-    // 4. R2 fallback
+    // 4. Fallback to R2 base URL
     const r2Base = store.get('stellas_r2_base','').replace(/\/$/,'');
     if (r2Base) {
-      const url = r2Base+'/'+filename;
-      console.log('[Video] R2 URL:', url);
+      const url = `${r2Base}/${filename}`;
+      console.log('[Storage] Resolved via R2:', url);
       return url;
     }
-    console.warn('[Video] Has filename but no storage URL configured:', filename);
   }
-  console.warn('[Video] No video found for:', item.name);
-  return '';
+  return item.videoUrl || '';
 }
 
 // ==========================================
@@ -1107,101 +1110,57 @@ function matchMessage(question, messages) {
 
 // ==========================================
 // GLOBAL MENU TRIGGER SCANNER
-// Smarter matching: word-boundary checks, noise guards, longest-phrase-wins.
+// Scans ALL menu items' triggers against the question.
+// This fires even when no item is currently selected (e.g. from home screen).
+// First keyword match across any item wins.
 // ==========================================
-
-// ==========================================
-// TRIGGER MATCHING -- simple and reliable
-// Longest keyword match wins. No noise guards, no regex.
-// ==========================================
-
-
-// ==========================================
-// CAROUSEL TRIGGER CHECKER
-// Reads triggers saved in Admin > Carousel tab and matches against the question.
-// Returns {items, label, response} if matched, null otherwise.
-// ==========================================
-function matchCarouselTrigger(question, menu) {
-  try {
-    var cfg = JSON.parse(localStorage.getItem('stellas_carousel_cfg') || '{}');
-    if (!cfg.enabled && cfg.enabled !== undefined) return null;
-    var triggers = cfg.triggers || [];
-    if (!triggers.length) return null;
-    // Strip punctuation so "what drinks do you have?" matches "what drinks do you have"
-    var q = question.toLowerCase().trim().replace(/[?!.,;:]/g,'');
-    // Find longest matching phrase first
-    var best = null;
-    var bestLen = 0;
-    for (var i = 0; i < triggers.length; i++) {
-      var t = triggers[i];
-      var phrase = (t.phrase || '').toLowerCase().trim().replace(/[?!.,;:]/g,'');
-      if (!phrase || phrase.length <= bestLen) continue;
-      if (q.indexOf(phrase) !== -1) {
-        best = t;
-        bestLen = phrase.length;
-      }
-    }
-    if (!best) return null;
-    // Resolve items from IDs
-    var pinnedIds = cfg.pinnedIds || [];
-    var triggerIds = best.itemIds || [];
-    // Pinned items first, then trigger items, deduped
-    var allIds = pinnedIds.concat(triggerIds.filter(function(id){ return pinnedIds.map(String).indexOf(String(id)) === -1; }));
-    var items = allIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
-    if (!items.length) {
-      // Fallback: return all items matching trigger item ids without pinned filter
-      items = triggerIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
-    }
-    if (!items.length) return null;
-    console.log('[Carousel] Trigger matched:', best.phrase, '|', items.length, 'items');
-    return { items: items, label: best.phrase, response: "Here's what we have!" };
-  } catch(e) {
-    console.warn('[Carousel] Trigger check failed:', e);
-    return null;
-  }
-}
-
 function matchAnyMenuTrigger(question, menu) {
   if (!menu || !menu.length) return null;
-  // Strip punctuation, lowercase
-  var q = question.toLowerCase().replace(/[?!.,;:]/g, '').trim();
+  const q = question.toLowerCase().trim();
 
-  var bestMatch = null;
-  var bestLen = 0;
+  let bestMatch = null;
+  let bestWordCount = 0;
 
-  for (var mi = 0; mi < menu.length; mi++) {
-    var item = menu[mi];
+  for (const item of menu) {
     if (!item.visible) continue;
 
-    var allTriggers = [];
+    const allTriggers = [];
+    // Split by both pipe and comma to support both formats
+    function splitKeywords(str){ return str.split(/[|,]/).map(function(p){return p.trim().toLowerCase();}).filter(Boolean); }
     if (item.triggers && item.triggers.length) {
-      for (var ti = 0; ti < item.triggers.length; ti++) {
-        var tr = item.triggers[ti];
+      for (const tr of item.triggers) {
         if (!tr.keywords) continue;
-        tr.keywords.split(',').forEach(function(p){
-          var kw = p.trim().toLowerCase();
-          if (kw) allTriggers.push({phrase:kw, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
+        splitKeywords(tr.keywords).forEach(function(phrase){
+          // Sanitize videoFilename to match what Supabase Storage actually has
+          var vf = tr.videoFilename||'';
+          if(vf) vf = vf.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
+          allTriggers.push({phrase:phrase, type:tr.action||'item-request', videoFilename:vf});
         });
       }
     }
     if (item.triggerKeywords) {
-      item.triggerKeywords.split(',').forEach(function(p){
-        var kw = p.trim().toLowerCase();
-        if (kw) allTriggers.push({phrase:kw, type:item.triggerType||'item-request', videoFilename:''});
+      splitKeywords(item.triggerKeywords).forEach(function(phrase){
+        allTriggers.push({phrase:phrase, type:item.triggerType||'item-request', videoFilename:''});
       });
     }
 
-    for (var ki = 0; ki < allTriggers.length; ki++) {
-      var t = allTriggers[ki];
-      if (!t.phrase || t.phrase.length <= bestLen) continue;
-      if (q.indexOf(t.phrase) !== -1) {
-        console.log('[Trigger] Match:', t.phrase, '->', item.name);
-        bestLen = t.phrase.length;
+    for (let ti=0; ti<allTriggers.length; ti++) {
+      const t = allTriggers[ti];
+      if (!t.phrase || !q.includes(t.phrase)) continue;
+      const wordCount = t.phrase.split(/\s+/).length;
+      console.log('[Trigger] Candidate:', t.phrase, '| words:', wordCount, '| item:', item.name);
+      if (wordCount > bestWordCount) {
+        bestWordCount = wordCount;
         bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
       }
     }
   }
 
+  if (bestMatch) {
+    console.log('[Trigger] Winner:', bestMatch.phrase, '| item:', bestMatch.item.name);
+  } else {
+    console.log('[Trigger] No match for:', q);
+  }
   return bestMatch;
 }
 function matchFAQ(question, faq) {
@@ -1226,40 +1185,49 @@ function matchFAQ(question, faq) {
   }
   return bestScore >= 2 ? best : null;
 }
-// Scans all triggers for a menu item. Longest phrase + word-boundary match wins.
+// Scans all triggers for a menu item. First keyword match wins.
 // Backwards-compatible with old flat triggerKeywords/triggerType fields.
 // ==========================================
 function matchMenuItemTrigger(question, item) {
   if (!item) return null;
-  var q = question.toLowerCase().replace(/[?!.,;:]/g, '').trim();
-  var bestMatch = null;
-  var bestLen = 0;
+  const q = question.toLowerCase().trim();
 
-  var allKws = [];
-  if (item.triggers && item.triggers.length) {
-    item.triggers.forEach(function(tr){
-      if (!tr.keywords) return;
-      tr.keywords.split(',').forEach(function(p){
-        var kw = p.trim().toLowerCase();
-        if (kw) allKws.push({phrase:kw, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
-      });
-    });
-  }
-  if (item.triggerKeywords) {
-    item.triggerKeywords.split(',').forEach(function(p){
-      var kw = p.trim().toLowerCase();
-      if (kw) allKws.push({phrase:kw, type:item.triggerType||'item-request', videoFilename:''});
-    });
-  }
+  let bestMatch = null;
+  let bestPhraseLen = 0;
 
-  allKws.forEach(function(t){
-    if (t.phrase.length > bestLen && q.indexOf(t.phrase) !== -1) {
-      bestLen = t.phrase.length;
-      bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
+  // Split by both pipe and comma to support both formats
+  function splitKw(str){ return str.split(/[|,]/).map(p => p.trim().toLowerCase()).filter(Boolean); }
+  const triggersArr = item.triggers && item.triggers.length ? item.triggers : null;
+  if (triggersArr) {
+    for (const tr of triggersArr) {
+      if (!tr.keywords) continue;
+      const phrases = splitKw(tr.keywords);
+      for (const phrase of phrases) {
+        if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
+          bestPhraseLen = phrase.length;
+          var vf = tr.videoFilename||'';
+          if(vf) vf = vf.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
+          bestMatch = { item, phrase, type: tr.action || 'item-request', videoFilename: vf };
+        }
+      }
     }
-  });
+    if (bestMatch) {
+      console.log('[Multi-trigger] Matched:', bestMatch.phrase, '| action:', bestMatch.type, '| item:', item.name);
+      return bestMatch;
+    }
+    return null;
+  }
 
-  if (bestMatch) console.log('[Trigger] Item match:', bestMatch.phrase, '->', item.name);
+  // Legacy fallback: flat triggerKeywords / triggerType
+  if (!item.triggerKeywords) return null;
+  const phrases = splitKw(item.triggerKeywords);
+  for (const phrase of phrases) {
+    if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
+      bestPhraseLen = phrase.length;
+      bestMatch = { item, phrase, type: item.triggerType || 'item-request', videoFilename: '' };
+    }
+  }
+  if (bestMatch) console.log('[Menu Trigger] Legacy matched:', bestMatch.phrase, '| item:', item.name);
   return bestMatch;
 }
 // Resolve which video to play for a matched trigger.
@@ -1313,17 +1281,9 @@ async function askAI(question, menu, messages, tableNum, faq) {
     const quickMatch = matchMenuItem(question, menu);
     console.log('[AI] Order local fuzzy match:', quickMatch ? quickMatch.name : 'none');
 
-    const menuList = items.map(function(i, n){
-    var parts = [(n+1) + '. ' + i.name];
-    if (i.price)  parts.push('$' + i.price);
-    if (i.cat)    parts.push(i.cat);
-    if (i.desc)   parts.push(i.desc);
-    if (i.ing)    parts.push('ingredients: ' + i.ing);
-    if (i.triggerKeywords) parts.push('also: ' + i.triggerKeywords);
-    return parts.join(' | ');
-  }).join('\n');
+    const menuList = items.map(function(i, n){ return (n+1) + '. ' + i.name; }).join('\n');
     const orderPrompt = [
-       'You are Anna, a friendly restaurant host at Stella\'s.',
+       'You are Mia, a friendly restaurant host at Stella\'s.',
       'A guest said: "' + question + '"',
       '',
       'Menu items:',
@@ -1392,92 +1352,6 @@ async function askAI(question, menu, messages, tableNum, faq) {
     }
   }
 
-  // -- Step 0.5: Hardcoded instant category detection --
-  const _qLow = question.toLowerCase();
-  const _isGroupQ = ['what do you have','what have you got','show me all','do you have any','what kind of','what types of','what are your','got any','can i see your','tell me about your','what can i get for','show me the'].some(t=>_qLow.includes(t));
-  if (_isGroupQ) {
-    const _CATS = [
-      {words:['drink','drinks','beverage','cocktail','wine','beer','juice','soda','alcohol','bar','mocktail'],label:'Drinks'},
-      {words:['dessert','desserts','sweet','sweets','cake','ice cream','pudding','tiramisu','chocolate'],label:'Desserts'},
-      {words:['starter','starters','appetizer','appetizers','app','apps','share','shareable'],label:'Starters'},
-      {words:['main','mains','entree','entrees'],label:'Mains'},
-      {words:['burger','burgers','cheeseburger'],label:'Burgers'},
-      {words:['sandwich','sandwiches','wrap','wraps','sub'],label:'Sandwiches'},
-      {words:['salad','salads'],label:'Salads'},
-      {words:['soup','soups','chowder'],label:'Soups'},
-      {words:['pasta','pastas','noodle','spaghetti'],label:'Pasta'},
-      {words:['pizza','pizzas','flatbread'],label:'Pizza'},
-      {words:['steak','steaks'],label:'Steaks'},
-      {words:['chicken','wings','wing','poultry'],label:'Chicken'},
-      {words:['seafood','fish','salmon','shrimp','lobster'],label:'Seafood'},
-      {words:['kids','children','child','kid'],label:'Kids'},
-    ];
-    for (const cat of _CATS) {
-      if (cat.words.some(w=>_qLow.includes(w))) {
-        const catItems = menu.filter(i=>{
-          if(!i.visible)return false;
-          const hay=((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')+' '+(i.triggerKeywords||'')).toLowerCase();
-          return cat.words.some(w=>hay.includes(w));
-        });
-        if (catItems.length>0) {
-          console.log('[AI] Instant category:',cat.label,'->',catItems.length,'items');
-          const _reply = "Here's what we have for "+cat.label.toLowerCase()+"!";
-          return {response:_reply,item:null,videoUrl:'',ingredientMatches:catItems,searchTerm:cat.label};
-        }
-      }
-    }
-  }
-
-  // -- Step 0.5: Hardwired phrase → instant carousel, no AI call --
-  const _q = question.toLowerCase().trim();
-  const _HARDWIRED = [
-    {phrase:'show me the menu',    all:true},
-    {phrase:'what do you have',    all:true},
-    {phrase:'full menu',           all:true},
-    {phrase:'show me drinks',      words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
-    {phrase:'what drinks',         words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
-    {phrase:'any drinks',          words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
-    {phrase:'show me desserts',    words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
-    {phrase:'what desserts',       words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
-    {phrase:'any desserts',        words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
-    {phrase:'show me starters',    words:['starter','appetizer','share','app']},
-    {phrase:'what starters',       words:['starter','appetizer','share','app']},
-    {phrase:'show me burgers',     words:['burger','cheeseburger']},
-    {phrase:'what burgers',        words:['burger','cheeseburger']},
-    {phrase:'any burgers',         words:['burger','cheeseburger']},
-    {phrase:'what kind of burger', words:['burger','cheeseburger']},
-    {phrase:'show me chicken',     words:['chicken','wing']},
-    {phrase:'what chicken',        words:['chicken','wing']},
-    {phrase:'show me pasta',       words:['pasta','noodle','spaghetti']},
-    {phrase:'show me salads',      words:['salad']},
-    {phrase:'what salads',         words:['salad']},
-    {phrase:'show me pizza',       words:['pizza','flatbread']},
-    {phrase:'what pizza',          words:['pizza','flatbread']},
-    {phrase:'show me steaks',      words:['steak','beef']},
-    {phrase:'show me mains',       cat:'mains'},
-    {phrase:'what mains',          cat:'mains'},
-  ];
-  for (const rule of _HARDWIRED) {
-    if (!_q.includes(rule.phrase)) continue;
-    let hits;
-    if (rule.all) {
-      hits = menu.filter(i=>i.visible);
-    } else if (rule.cat) {
-      hits = menu.filter(i=>i.visible&&(i.cat||'').toLowerCase().includes(rule.cat));
-    } else {
-      hits = menu.filter(i=>{
-        if(!i.visible)return false;
-        const hay=((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')+' '+(i.triggerKeywords||'')).toLowerCase();
-        return rule.words.some(w=>hay.includes(w));
-      });
-    }
-    if(hits.length>0){
-      const label = rule.all?'Full Menu':rule.words?rule.words[0].charAt(0).toUpperCase()+rule.words[0].slice(1):rule.cat;
-      console.log('[AI] Hardwired:',rule.phrase,'->',hits.length,'items');
-      return{response:"Here's what we have for "+label.toLowerCase()+"!",item:null,videoUrl:'',ingredientMatches:hits,searchTerm:label};
-    }
-  }
-
   // -- Step 1: Check all active Messages entries (non-order questions only) --
   const msgMatch = matchMessage(question, messages);
   if (msgMatch) {
@@ -1530,39 +1404,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
     };
   }
 
-  // Also send active messages so AI can match those too
-  var _activeMsgs = (messages||[]).filter(function(m){ return m.active; });
-  var msgListForAI = _activeMsgs.length
-    ? _activeMsgs.map(function(m,n){
-        var p = ['MSG'+(n+1)+'. '+m.title];
-        if (m.body) p.push(m.body);
-        if (m.triggerKeywords) p.push('triggers: '+m.triggerKeywords);
-        return p.join(' | ');
-      }).join('\n')
-    : 'none';
-
-  const systemPrompt = [
-    "You are Stella, a warm knowledgeable host at Stella's restaurant.",
-    'A guest said: "' + question + '"',
-    '',
-    'MENU (name | price | category | description | ingredients | also known as):',
-    menuList,
-    '',
-    'PRESET MESSAGES (greetings, specials, FAQs):',
-    msgListForAI,
-    '',
-    'TASK: Find the single best match using ALL fields — name, description, ingredients, synonyms, triggers.',
-    'Loose matching rules:',
-    '- "cheeseburger" or "burger" → find the closest burger item',
-    '- "something sweet" or "dessert" → find the best dessert',
-    '- "red wine" → find closest wine item',
-    '- Category questions ("what desserts", "show me drinks") → reply CATEGORY:[exact category name]',
-    '- If a preset message is the best answer → reply MSG:[exact message title]',
-    '- If a menu item is the best answer → reply ITEM:[exact item name]',
-    '- If nothing matches → reply ITEM:none',
-    'Write a warm 1-2 sentence reply FIRST, then on the VERY LAST LINE write ITEM:, MSG:, or CATEGORY:. Nothing after.',
-    langInstruction
-  ].join('\n');
+  const systemPrompt = 'You are Mia, a friendly restaurant host at Stella\'s. A guest asked: "' + question + '"\n\nMenu:\n' + menuList + '\n\nWrite a warm 1-2 sentence reply about the best matching item. On the VERY LAST LINE write exactly: ITEM:[item name] -- or ITEM:none if nothing matches. Never write anything after that line.' + langInstruction;
 
   try {
     var rawText = '';
@@ -1584,32 +1426,10 @@ async function askAI(question, menu, messages, tableNum, faq) {
     if (!rawText.trim()) throw new Error('Empty AI response');
 
     var allLines = rawText.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
-    // Find the tag line — ITEM:, MSG:, or CATEGORY:
-    var tagLine = allLines.find(function(l){ return /^(ITEM:|MSG:|CATEGORY:)/i.test(l); });
-    var responseText = allLines.filter(function(l){ return !/^(ITEM:|MSG:|CATEGORY:)/i.test(l); }).join(' ').trim() || "Let me help you with that!";
+    var itemLine = allLines.find(function(l){ return /^ITEM:/i.test(l); });
+    var extractedName = itemLine ? itemLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
+    var responseText = allLines.filter(function(l){ return !/^ITEM:/i.test(l); }).join(' ').trim() || "That sounds great -- let me tell you more!";
 
-    // Handle CATEGORY: → show carousel of matching items
-    if (tagLine && /^CATEGORY:/i.test(tagLine)) {
-      var catName = tagLine.replace(/^CATEGORY:\s*/i,'').trim().toLowerCase();
-      console.log('[AI] Category response:', catName);
-      var catMatches = menu.filter(function(i){
-        return i.visible && ((i.cat||'').toLowerCase().includes(catName) || catName.includes((i.cat||'').toLowerCase()));
-      });
-      return { response: responseText, item: null, videoUrl: '', ingredientMatches: catMatches, searchTerm: catName };
-    }
-
-    // Handle MSG: → find and return preset message with its video
-    if (tagLine && /^MSG:/i.test(tagLine)) {
-      var msgTitle = tagLine.replace(/^MSG:\s*/i,'').trim().toLowerCase();
-      console.log('[AI] Message response:', msgTitle);
-      var _msgs = (messages||[]).filter(function(m){ return m.active; });
-      var msgHit = _msgs.find(function(m){ return m.title.toLowerCase() === msgTitle; })
-        || _msgs.find(function(m){ return m.title.toLowerCase().includes(msgTitle) || msgTitle.includes(m.title.toLowerCase()); });
-      if (msgHit) return { response: msgHit.body||msgHit.title, item: null, videoUrl: resolveVideoUrl(msgHit), matchedMessage: msgHit };
-    }
-
-    // Handle ITEM:
-    var extractedName = (tagLine && /^ITEM:/i.test(tagLine)) ? tagLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
     console.log('[AI] Parsed item:', extractedName, '| Response:', responseText);
 
     var aiMatch = extractedName.toLowerCase() !== 'none' ? matchMenuItem(extractedName, menu) : null;
@@ -1625,7 +1445,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
       if (faqMatch) {
         console.log('[FAQ] Fallback:', question, '| Matched entry:', faqMatch.title);
         // Use Groq to turn the FAQ entry into a friendly spoken reply
-        var faqPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest asked: "' + question + '". Here is the relevant info: "' + faqMatch.title + ': ' + faqMatch.body + '". Reply warmly and conversationally in 1-2 sentences using this info. Output ONLY the reply, no labels.' + langInstruction;
+        var faqPrompt = 'You are Mia, a friendly AI host at Stella\'s restaurant. A guest asked: "' + question + '". Here is the relevant info: "' + faqMatch.title + ': ' + faqMatch.body + '". Reply warmly and conversationally in 1-2 sentences using this info. Output ONLY the reply, no labels.' + langInstruction;
         try {
           var faqRaw = '';
           if (cfg.format === 'anthropic') {
@@ -1643,7 +1463,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
           return { response: faqMatch.body, item: null, videoUrl: '', faqEntry: faqMatch };
         }
       }
-      var fallbackPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest said: "' + question + '". There is no matching menu item. Reply warmly in 1-2 sentences -- apologize briefly, stay helpful, suggest they browse the menu or ask something else. Be conversational, never robotic. Output ONLY the reply text, no labels or extra lines.' + langInstruction;
+      var fallbackPrompt = 'You are Mia, a friendly AI host at Stella\'s restaurant. A guest said: "' + question + '". There is no matching menu item. Reply warmly in 1-2 sentences -- apologize briefly, stay helpful, suggest they browse the menu or ask something else. Be conversational, never robotic. Output ONLY the reply text, no labels or extra lines.' + langInstruction;
       try {
         var fr; var fd;
         if (cfg.format === 'anthropic') {
@@ -1851,7 +1671,7 @@ function SettingsModal({ onClose, showToast }) {
             )
           : h('div', null,
               h('div', { style: { fontSize: 13, color: 'var(--text2)', lineHeight: 1.6, padding: '10px 12px', background: 'rgba(255,80,80,.05)', borderRadius: 10, border: '1px solid rgba(255,80,80,.15)', marginBottom: 14 } },
-                '🔴 ', h('strong', null, 'Live HeyGen mode'), ' -- Anna responds in real-time with full lip-sync. Uses HeyGen credits per session. Requires SDK: ', h('code', { style: { fontSize: 11, background: 'rgba(0,0,0,.06)', padding: '1px 5px', borderRadius: 4 } }, 'npm i @heygen/streaming-avatar')
+                '🔴 ', h('strong', null, 'Live HeyGen mode'), ' -- Mia responds in real-time with full lip-sync. Uses HeyGen credits per session. Requires SDK: ', h('code', { style: { fontSize: 11, background: 'rgba(0,0,0,.06)', padding: '1px 5px', borderRadius: 4 } }, 'npm i @heygen/streaming-avatar')
               ),
               h('div', { className: 'form-group', style: { marginBottom: 12 } },
                 h('label', { className: 'label' }, 'HeyGen API Key'),
@@ -1869,7 +1689,7 @@ function SettingsModal({ onClose, showToast }) {
                 h('input', {
                   value: cfg.heygenAvatarId || '',
                   onChange: e => p('heygenAvatarId')(e.target.value),
-                  placeholder: 'e.g. avatar_Anna_standing_20240101',
+                  placeholder: 'e.g. avatar_Mia_standing_20240101',
                   className: 'field'
                 })
               ),
@@ -1932,7 +1752,7 @@ function HeyGenPlayer({ text, onFallback }) {
     // Name tag
     h('div', { style: { position: 'absolute', bottom: 70, left: 20, background: 'linear-gradient(135deg,var(--gold),var(--gold2))', color: '#1a1a0a', borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 700 } },
       h('div', { style: { fontSize: 9, letterSpacing: 2 } }, "STELLA'S"),
-      h('div', null, 'Anna')
+      h('div', null, 'Mia')
     )
   );
 }
@@ -2016,7 +1836,7 @@ function QRDisplay({tableNum, baseUrl, sessionToken, onReset}){
         <div class="sub">AI HOST</div>
         <div class="table">Table ${tableNum}</div>
         <div id="qr-print"></div>
-        <div class="msg">Scan to chat with Anna,<br>your AI host!</div>
+        <div class="msg">Scan to chat with Mia,<br>your AI host!</div>
         <hr class="divider">
         <div class="token">Session: ${token}</div>
       </div>
@@ -2221,7 +2041,7 @@ function getWelcomeVideo(messages){
 function getSavedVolume(){ try{ const v=parseFloat(localStorage.getItem('stellas_volume')); return(!isNaN(v)&&v>=0&&v<=1)?v:0.5; }catch(e){ return 0.5; } }
 function saveVolume(v){ try{ localStorage.setItem('stellas_volume',String(v)); }catch(e){} }
 
-function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false,onEnded,fallbackVideoUrl,staticImgSrc,idleAfter=false,hideNameTag=false}){
+function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false,onEnded,fallbackVideoUrl,staticImgSrc,idleAfter=false}){
   const videoRef = useRef();
   const myPlayId = useRef(0);
   const[ended,setEnded]=useState(false);
@@ -2242,7 +2062,6 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
   useEffect(()=>{
     const v = videoRef.current;
     if(!v) return;
-    console.log('[AvatarDisplay] playUrl received:', playUrl ? playUrl.substring(0,80) : 'EMPTY');
     if(!playUrl){
       v.pause(); v.currentTime=0;
       setEnded(false); setVideoErr(false);
@@ -2302,8 +2121,8 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
                    .catch(e=>console.warn('[Video] Replay error:',e.message));
   }
 
-  const nameTag=hideNameTag?null:h('div',{style:{position:'absolute',bottom:20,left:16,zIndex:2,pointerEvents:'none',background:'linear-gradient(135deg,var(--gold),var(--gold2))',color:'#1a1a0a',borderRadius:6,padding:'4px 10px',fontFamily:"'Playfair Display',serif",fontSize:11,fontWeight:700,boxShadow:'0 2px 8px rgba(0,0,0,.3)'}},
-    h('div',{style:{fontSize:9,letterSpacing:2}},"STELLA'S"),h('div',{style:{fontSize:11}},'Anna'));
+  const nameTag=h('div',{style:{position:'absolute',bottom:20,left:16,zIndex:2,pointerEvents:'none',background:'linear-gradient(135deg,var(--gold),var(--gold2))',color:'#1a1a0a',borderRadius:6,padding:'4px 10px',fontFamily:"'Playfair Display',serif",fontSize:11,fontWeight:700,boxShadow:'0 2px 8px rgba(0,0,0,.3)'}},
+    h('div',{style:{fontSize:9,letterSpacing:2}},"STELLA'S"),h('div',{style:{fontSize:11}},'Mia'));
 
   const pillBtn={background:'rgba(0,0,0,.65)',border:'1.5px solid rgba(255,255,255,.25)',color:'white',borderRadius:50,padding:'0 14px',height:34,fontSize:13,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(8px)',boxShadow:'0 2px 10px rgba(0,0,0,.35)',fontFamily:"'Lato',sans-serif"};
 
@@ -2318,48 +2137,57 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
 
   const replayBtn = playUrl && (ended||videoErr) && h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again');
 
-  // Always render the same JSX structure so React never remounts the <video> element.
-  // Show/hide poster image over the video depending on state.
-  const imgSrc = staticImgSrc || posterUrl || '';
-  const showPoster = !playUrl || (ended && !idleAfter);
-  const showIdleImg = (!playUrl) || (ended && idleAfter);
+  // -- No video: show idle static image --
+  if(!playUrl){
+    const imgSrc = staticImgSrc || posterUrl || '';
+    return h('div',{className:'avatar-frame',style:{height,position:'relative',boxShadow:active?'0 0 40px rgba(201,168,76,.5),var(--shadow-glow)':'var(--shadow-glow)'}},
+      imgSrc
+        ? h('img',{src:imgSrc,alt:'Mia',className:'idle-breathe',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
+        : h('div',{style:{width:'100%',height:'100%',background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
+            h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')),
+      active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
+      h('div',{className:'sparkle-overlay'}),nameTag
+    );
+  }
 
+  // -- After confirm video ends: idle breathe with item thumbnail --
+  if(ended && idleAfter){
+    const idleSrc = staticImgSrc || posterUrl || '';
+    return h('div',{className:'avatar-frame',style:{height,position:'relative',boxShadow:active?'0 0 40px rgba(201,168,76,.5),var(--shadow-glow)':'var(--shadow-glow)'}},
+      idleSrc
+        ? h('img',{src:idleSrc,alt:'Mia',className:'idle-breathe',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
+        : h('div',{style:{width:'100%',height:'100%',background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
+            h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')),
+      sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
+      h('div',{className:'sparkle-overlay'}),
+      h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again'),
+      nameTag
+    );
+  }
+
+  // -- Video playing --
   return h('div',{className:'avatar-video-wrap',style:{height}},
-    // Video element is ALWAYS mounted — changing src triggers playback, never remounts
+    // The <video> element stays in this JSX subtree -- never moved/reparented
     h('video',{
       ref:videoRef,
-      autoPlay:true, playsInline:true, muted:true, loop:effectiveLoop,
-      'webkit-playsinline':'', 'x-webkit-airplay':'deny',
-      disablePictureInPicture:true, disableRemotePlayback:true,
-      style:{
-        width:'100%', height:'100%', display:'block',
-        objectFit:'cover', objectPosition:'top center',
-        pointerEvents:'none',
-        opacity: (!playUrl || ended) ? 0 : 1,
-        transition:'opacity .4s ease'
-      },
+      src:playUrl,
+      autoPlay:true,playsInline:true,muted:true,loop:effectiveLoop,
+      'webkit-playsinline':'','x-webkit-airplay':'deny',
+      disablePictureInPicture:true,disableRemotePlayback:true,
+      style:{width:'100%',height:'100%',display:'block',objectFit:'cover',objectPosition:'top center',
+        pointerEvents:'none',opacity:(ended&&!idleAfter)?0:1,transition:'opacity .4s ease'},
       onEnded:()=>{ setEnded(true); if(onEnded)onEnded(); },
-      onError:()=>{ console.warn('[Video] Error loading:', (playUrl||'').split('/').pop()); setVideoErr(true); },
+      onError:()=>{ console.warn('[Video] Error loading:', playUrl.split('/').pop()); setVideoErr(true); },
     }),
-    // Poster/idle image layered on top when no video or video ended
-    (showPoster || showIdleImg) && imgSrc && h('div',{style:{position:'absolute',inset:0,zIndex:1}},
-      h('img',{
-        src:imgSrc, alt:'Anna',
-        className: (!playUrl || (ended && idleAfter)) ? 'idle-breathe' : '',
-        style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}
-      })
+    // Flat poster after regular (non-idle) video ends
+    ended&&!idleAfter&&(posterUrl||staticImgSrc)&&h('div',{style:{position:'absolute',inset:0,zIndex:1}},
+      h('img',{src:posterUrl||staticImgSrc,alt:'poster',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
     ),
-    // Fallback when no image either
-    (showPoster || showIdleImg) && !imgSrc && h('div',{style:{position:'absolute',inset:0,zIndex:1,background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
-      h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')
-    ),
-    // Replay button
-    playUrl && (ended||videoErr) && h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again'),
-    volControl, nameTag,
+    volControl,replayBtn,nameTag,
     active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}}))
   );
 }
-function AnnaPhoto({height='62vh',active=false,staticImgSrc=''}){
+function MiaPhoto({height='62vh',active=false,staticImgSrc=''}){
   return h(AvatarDisplay,{height,active,videoUrl:'',posterUrl:'',fallbackVideoUrl:'',staticImgSrc});
 }
 
@@ -2502,7 +2330,7 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
   const promos=features.map(s=>getPromo(s));
   const hasAnyPromo=promos.some(Boolean);
 
-  // Card tap handler -- asks Anna about the item via chat flow
+  // Card tap handler -- asks Mia about the item via chat flow
   function handleCardTap(item){
     if(onCardAsk) onCardAsk(item);
     else if(onItemSelect) onItemSelect(item);
@@ -2529,7 +2357,7 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
     h('div',{style:{padding:'14px 16px 0'}},
       h('div',{className:'bubble',style:{textAlign:'center'}},
         h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:22,color:'var(--text1)',marginBottom:4}},
-          welcome?welcome.title:"Hi, I'm Anna 👋"
+          welcome?welcome.title:"Hi, I'm Mia 👋"
         ),
         h('div',{style:{fontSize:14,color:'var(--text2)',lineHeight:1.6}},
           welcome?welcome.body:"Ask me about today's menu, specials, or ingredients"
@@ -2565,7 +2393,7 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
             h('div',{className:'feat-label-sub',style:{fontSize:11,lineHeight:1.4}},p.body.substring(0,55)+'…')
           ),
           // Tap hint
-          h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Anna ✨')
+          h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Mia ✨')
         ))
       )
     ),
@@ -2587,7 +2415,7 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
           h('div',{className:'feat-label-title'},item.name),
           h('div',{className:'feat-label-sub',style:{color:'var(--gold3)',fontWeight:700}},'$'+item.price)
         ),
-        h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Anna ✨')
+        h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Mia ✨')
       ))
     ),
 
@@ -2608,7 +2436,7 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
           h('div',{className:'feat-label-title'},item.name),
           h('div',{className:'feat-label-sub',style:{color:'var(--gold3)',fontWeight:700}},'$'+item.price)
         ),
-        h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Anna ✨')
+        h('div',{style:{position:'absolute',top:6,right:6,background:'rgba(0,0,0,.45)',borderRadius:20,padding:'2px 8px',fontSize:10,color:'white',pointerEvents:'none'}},'Ask Mia ✨')
       ))
     ),
     
@@ -2619,13 +2447,13 @@ function HomeScreen({menu,messages,onSpeak,onItemSelect,onCardAsk,tableNum,homeT
 // LISTENING SCREEN
 function ListeningScreen({transcript,onStop,thinking=false,staticImgSrc=''}){
   return h('div',{className:'main-scroll fade-in'},
-    h(AnnaPhoto,{height:'58vh',active:true,staticImgSrc}),
+    h(MiaPhoto,{height:'58vh',active:true,staticImgSrc}),
     h('div',{style:{padding:'14px 16px 0'}},
       h('div',{className:'bubble',style:{textAlign:'center'}},
         thinking
           ? h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'4px 0'}},
               ...[0,1,2].map(i=>h('div',{key:i,style:{width:9,height:9,borderRadius:'50%',background:'var(--gold)',animation:'pulse 1.2s ease-in-out infinite',animationDelay:`${i*0.25}s`}})),
-              h('span',{style:{fontSize:14,color:'var(--text2)',marginLeft:6}},'Anna is thinking…')
+              h('span',{style:{fontSize:14,color:'var(--text2)',marginLeft:6}},'Mia is thinking…')
             )
           : transcript
             ? h('p',{style:{fontSize:15,color:'var(--text1)',lineHeight:1.6}},'"',transcript,'"')
@@ -2646,118 +2474,32 @@ function ListeningScreen({transcript,onStop,thinking=false,staticImgSrc=''}){
 }
 
 // RESPONSE SCREEN
-function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd}){
+function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback}){
   const useHeygen = avatarMode === 'heygen' && !heygenFallback;
   const hasItem = !!item;
   const hasVideo = !!videoUrl;
-  const hasCarousel = !!(carouselItems&&carouselItems.length>0);
-  // Only use welcome video as fallback when we have NO specific item (general response)
-  // When we have an item but no video, show the item's photo — not the welcome video
-  const fallback = ordered ? '' : (!hasItem && !hasVideo ? (welcomeVideoUrl||'') : '');
-  const idleImg = ordered
-    ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '')
-    : (item?.imgUrl || welcomeImgSrc || '');
+  const fallback = ordered ? '' : ((hasItem||hasVideo) ? (welcomeVideoUrl||'') : '');
+  // After order confirm: idle image = message's imgUrl (Mia confirm photo), fallback to item food photo
+  const idleImg = ordered ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '') : (item?.imgUrl || welcomeImgSrc || '');
 
   return h('div',{className:'main-scroll fade-in'},
+    useHeygen
+      ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
+      : h(AvatarDisplay,{
+          videoUrl:videoUrl||'',
+          posterUrl:idleImg,
+          fallbackVideoUrl:fallback,
+          staticImgSrc:idleImg,
+          height:'62vh',
+          active:hasItem,
+          loop:false,
+          idleAfter:ordered,
+          onEnded: ordered ? ()=>{
+            console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
+          } : null,
+        }),
 
-    // ── Avatar frame + ALL overlays inside one relative container with explicit height ──
-    h('div',{style:{position:'relative', height:'62vh', overflow:'hidden', borderTop:'2px solid var(--gold)', borderBottom:'2px solid var(--gold)', boxShadow:'var(--shadow-glow)'}},
-      useHeygen
-        ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
-        : h(AvatarDisplay,{
-            videoUrl: hasCarousel ? (welcomeVideoUrl||'') : (videoUrl||''),
-            posterUrl: idleImg,
-            fallbackVideoUrl: hasCarousel ? '' : fallback,
-            // No video + has item → show item food photo full frame
-            // No video + no item → show Anna's welcome image
-            staticImgSrc: (!videoUrl && !fallback && hasItem && item.imgUrl)
-              ? item.imgUrl
-              : (welcomeImgSrc || idleImg),
-            height:'100%',
-            active: hasCarousel ? false : (hasItem && hasVideo),
-            loop: hasCarousel ? true : false,
-            idleAfter:ordered,
-            hideNameTag:hasCarousel,
-            onEnded: ordered ? ()=>{ console.log('[Order] Confirm video ended'); } : null,
-          }),
-
-      // -- Name tag bottom-left (always visible, hidden by carousel overlay) --
-      h('div',{style:{position:'absolute',bottom:20,left:16,zIndex:2,pointerEvents:'none',background:'linear-gradient(135deg,var(--gold),var(--gold2))',color:'#1a1a0a',borderRadius:6,padding:'4px 10px',fontFamily:"'Playfair Display',serif",fontSize:11,fontWeight:700,boxShadow:'0 2px 8px rgba(0,0,0,.3)',opacity:hasCarousel?0:1,transition:'opacity .3s'}},
-        h('div',{style:{fontSize:9,letterSpacing:2}},"STELLA'S"),
-        h('div',{style:{fontSize:11}},'Anna')
-      ),
-
-      // -- Floating add button bottom-right (single item only, hidden when carousel showing) --
-      item&&!hasCarousel&&h('button',{
-        onClick:()=>{ if(!ordered){ if(tableNum){onOrder(item);setOrdered(true);}else{onOrder(item);} } },
-        style:{
-          position:'absolute', bottom:14, right:14,
-          background: ordered ? 'var(--green)' : 'linear-gradient(135deg,var(--gold2),var(--gold3))',
-          color:'white', border:'none', borderRadius:50,
-          padding:'9px 16px', fontSize:13, fontWeight:700,
-          cursor: ordered ? 'default' : 'pointer',
-          boxShadow:'0 4px 18px rgba(44,24,16,0.38)',
-          display:'flex', alignItems:'center', gap:6,
-          zIndex:10, whiteSpace:'nowrap', transition:'background .3s',
-        }
-      },
-        h('div',{style:{width:15,height:15,flexShrink:0}},I.check),
-        ordered ? '✓ Added!' : (tableNum ? 'Add to Order' : 'Add to Cart')
-      ),
-
-      // ── CAROUSEL OVERLAY — covers name tag + add button, anchored to bottom of avatar ──
-      hasCarousel&&h('div',{style:{
-        position:'absolute',
-        bottom:0, left:0, right:0,
-        zIndex:20,
-        background:'linear-gradient(to top, rgba(10,22,14,0.97) 0%, rgba(10,22,14,0.82) 55%, transparent 100%)',
-        paddingTop:48,
-        paddingBottom:12,
-      }},
-        // Label row
-        h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px 8px'}},
-          h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--gold2)',fontWeight:700,letterSpacing:'0.3px'}},
-            carouselLabel||'Menu'
-          ),
-          carouselItems.length>2&&h('span',{style:{fontSize:11,color:'rgba(255,255,255,0.45)',letterSpacing:1}},'swipe ›')
-        ),
-        // Scrollable card strip
-        h('div',{style:{
-          display:'flex', gap:10,
-          overflowX:'auto',
-          padding:'0 14px 4px',
-          WebkitOverflowScrolling:'touch',
-          scrollbarWidth:'none',
-          msOverflowStyle:'none',
-        }},
-          carouselItems.map((dish,di)=>h('div',{
-            key:dish.id||di,
-            style:{
-              flexShrink:0, width:108,
-              background:'rgba(255,255,255,0.97)',
-              border:'1.5px solid rgba(201,168,76,0.7)',
-              borderRadius:12,
-              overflow:'hidden',
-              boxShadow:'0 6px 20px rgba(0,0,0,0.5)',
-            }
-          },
-            dish.imgUrl
-              ? h('img',{src:dish.imgUrl,alt:dish.name,style:{width:'100%',height:68,objectFit:'cover',display:'block'}})
-              : h('div',{style:{width:'100%',height:68,background:'var(--cream2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}},'🍽️'),
-            h('div',{style:{padding:'6px 7px 8px'}},
-              h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:10,fontWeight:700,color:'var(--text1)',lineHeight:1.3,marginBottom:2,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}},dish.name),
-              h('div',{style:{fontSize:10,color:'var(--gold3)',fontWeight:700,marginBottom:5}},'$'+dish.price),
-              h('button',{
-                onClick:()=>onCarouselAdd&&onCarouselAdd(dish),
-                style:{width:'100%',background:'var(--green)',color:'white',border:'none',borderRadius:6,padding:'5px 0',fontSize:10,fontWeight:700,cursor:'pointer',fontFamily:"'Lato',sans-serif"}
-              },'+ Add')
-            )
-          ))
-        )
-      )
-    ),
-
-    // -- Response bubble --
+    // -- Response bubble -- always present when we reach this screen --
     h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'bubble',style:{textAlign:'center'}},
         h('p',{style:{fontSize:14,color:'var(--text2)',lineHeight:1.65}},
@@ -2766,8 +2508,8 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       )
     ),
 
-    // -- Single item card (only when no carousel) --
-    item&&!hasCarousel&&h('div',{style:{padding:'10px 16px 0'}},
+    // -- Item card --
+    item&&h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'glass',style:{display:'flex',gap:12,padding:14}},
         item.imgUrl
           ? h('img',{src:item.imgUrl,alt:item.name,style:{width:84,height:84,borderRadius:12,objectFit:'cover',flexShrink:0,boxShadow:'0 3px 12px rgba(0,0,0,.15)'}})
@@ -2780,26 +2522,34 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       )
     ),
 
-    // -- Order button table mode (no carousel) --
-    item&&!hasCarousel&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button (table mode) --
+    item&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);setOrdered(true);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      }, h('div',{className:'btn-icon'},I.check), ordered?'Ordered! ✓':'Order to Table'),
+      },
+        h('div',{className:'btn-icon'},I.check),
+        ordered?'Ordered! ✓':'Order to Table'
+      ),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
+      )
     ),
 
-    // -- Order button takeout mode (no carousel) --
-    item&&!hasCarousel&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button (takeout mode) --
+    item&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      }, h('div',{className:'btn-icon'},I.check), ordered?'Added! ✓':'Add to Order'),
+      },
+        h('div',{className:'btn-icon'},I.check),
+        ordered?'Added! ✓':'Add to Order'
+      ),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
+      )
     ),
 
     // -- Talk / Text buttons --
@@ -2877,8 +2627,8 @@ function parseQty(text) {
 }
 
 // TEXT CHAT MODAL
-function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
-  const[msgs,setMsgs]=useState([{role:'assistant',content:"Hi! I'm Anna \uD83D\uDC4B What can I help you with today?"}]);
+function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
+  const[msgs,setMsgs]=useState([{role:'assistant',content:"Hi! I'm Mia \uD83D\uDC4B What can I help you with today?"}]);
   const[inp,setInp]=useState('');
   const[loading,setLoading]=useState(false);
   const[coolingDown,setCoolingDown]=useState(false);
@@ -2997,16 +2747,6 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,ta
     setLoading(true);
     console.log('[TextChat] Question:',txt,'| Table mode:',tableNum||'none');
     try{
-      // -- Priority -1: Carousel triggers from Admin > Carousel tab --
-      const carouselTextHit = matchCarouselTrigger(txt, menu);
-      if(carouselTextHit){
-        console.log("[Carousel] Text trigger matched:", carouselTextHit.label);
-        setLoading(false);
-        if(onCarousel) onCarousel(carouselTextHit.items, carouselTextHit.label, carouselTextHit.response);
-        onClose();
-        return;
-      }
-
       // -- Priority 0: Menu item trigger keywords --
       // First scan ALL menu items (works from home screen, menu page, anywhere).
       // Then also check activeItem/selectedItem for context-specific triggers.
@@ -3091,13 +2831,17 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,ta
       console.log('[TextChat] AI result -- item:',item?.name||'none','| video:',videoUrl||'none','| orderIntent:',orderIntent,'| ingredientMatches:',ingredientMatches?.length||0);
       if(noKey){setMsgs(p=>[...p,{role:'assistant',content:response}]);setLoading(false);return;}
 
-      // -- Ingredient/category search result → close chat, show carousel on response screen --
+      // -- Ingredient search result → show compact dish list --
       if(ingredientMatches&&ingredientMatches.length>0){
+        setMsgs(p=>[...p,{
+          role:'assistant',
+          content:response,
+          ingredientList:ingredientMatches,
+          searchTerm,
+          msgId:Date.now()
+        }]);
+        speakReply(response);  // speak the "Here are the dishes with X" heading
         setLoading(false);
-        if(onCarousel){
-          onCarousel(ingredientMatches, searchTerm||'', response||"Here's what we have!");
-        }
-        onClose();
         return;
       }
 
@@ -3161,7 +2905,7 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,ta
     h('div',{className:'sheet'},
       h('div',{className:'modal-top'},
         h('div',{style:{display:'flex',alignItems:'center',gap:8}},
-          h('div',{className:'modal-title'},'Chat with Anna \u2728'),
+          h('div',{className:'modal-title'},'Chat with Mia \u2728'),
           tableNum&&h('span',{className:'table-badge',style:{fontSize:11}},'Table '+tableNum)
         ),
         h('button',{className:'close-btn',onClick:()=>{stopTTS();onClose();},},'\u2715')
@@ -3254,7 +2998,7 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,ta
         )),
         loading&&h('div',{style:{alignSelf:'flex-start',display:'flex',alignItems:'center',gap:8,color:'var(--text3)',fontSize:13,padding:'4px 8px'}},
           ...[0,1,2].map(i=>h('div',{key:i,style:{width:7,height:7,borderRadius:'50%',background:'var(--gold)',animation:'pulse 1.2s ease-in-out infinite',animationDelay:`${i*0.25}s`}})),
-          h('span',{style:{fontStyle:'italic'}},'Anna is typing\u2026')
+          h('span',{style:{fontStyle:'italic'}},'Mia is typing\u2026')
         ),
         coolingDown&&h('div',{style:{alignSelf:'center',background:'rgba(220,60,60,.08)',border:'1px solid rgba(220,60,60,.2)',borderRadius:12,padding:'8px 14px',fontSize:12,color:'var(--red)',textAlign:'center',maxWidth:'90%'}},
           h('div',{style:{fontWeight:700,marginBottom:4}},'⏳ Cooling down\u2026'),
@@ -3327,13 +3071,15 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
 
   async function uploadToSupabase(file){
     if(!sbUrl||!sbKey){
-      // No Supabase -- store as local blob
-      const data=await readFileAsDataURL(file);
-      onUrlChange(data);onFilenameChange('');
-      setUploadMsg('✓ Stored locally (add Supabase in Settings to sync across devices)');
+      setUploadMsg('❌ No Supabase configured. Go to Admin → Settings → Supabase and add your Project URL, Anon Key, and Bucket name.');
       return;
     }
-    setUploading(true);setUploadMsg('Uploading…');
+    const sizeMB=(file.size/(1024*1024)).toFixed(1);
+    if(file.size>100*1024*1024){
+      setUploadMsg('⚠️ File is '+sizeMB+'MB — may be too large. Try a shorter or lower-res video.');
+      return;
+    }
+    setUploading(true);setUploadMsg('Uploading '+sizeMB+'MB…');
     const filename=file.name.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
     try{
       const res=await fetch(`${sbUrl}/storage/v1/object/${sbBucket}/${filename}`,{
@@ -3341,17 +3087,28 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
         headers:{'apikey':sbKey,'Authorization':'Bearer '+sbKey,'Content-Type':file.type,'x-upsert':'true'},
         body:file,
       });
-      const d=await res.json();
-      console.log('[Supabase] Upload response:',d);
-      if(d.error){throw new Error(d.error.message||JSON.stringify(d.error));}
+      const text=await res.text();
+      let d;
+      try{d=JSON.parse(text);}catch(parseErr){
+        if(!res.ok) throw new Error('HTTP '+res.status+': '+text.substring(0,120));
+        d={};
+      }
+      console.log('[Supabase] Upload response:',d,'status:',res.status);
+      if(!res.ok||d.error){
+        const errMsg=d.error?.message||d.message||d.error||text.substring(0,120);
+        if(res.status===403||/policy|permission|not allowed|unauthorized/i.test(String(errMsg))){
+          throw new Error('Permission denied — add an INSERT policy for anon in Supabase Storage.');
+        }
+        if(res.status===404||/not found|bucket/i.test(String(errMsg))){
+          throw new Error('Bucket "'+sbBucket+'" not found — create it in Supabase Dashboard → Storage.');
+        }
+        throw new Error(String(errMsg));
+      }
       onFilenameChange(filename);onUrlChange('');
-      setUploadMsg('✓ Uploaded: '+filename);
+      setUploadMsg('✅ Uploaded: '+filename+' ('+sizeMB+'MB)');
     }catch(e){
       console.error('[Supabase] Upload failed:',e);
-      // Fallback to local blob
-      const data=await readFileAsDataURL(file);
-      onUrlChange(data);onFilenameChange('');
-      setUploadMsg('⚠️ Supabase upload failed ('+e.message+') -- stored locally');
+      setUploadMsg('❌ Upload failed: '+e.message);
     }
     setUploading(false);
   }
@@ -4324,7 +4081,7 @@ function AdminSettingsPanel({showToast}){
           )
         : h('div',null,
             h('div',{style:{fontSize:13,color:'var(--text2)',padding:'10px 12px',background:'rgba(255,80,80,.04)',borderRadius:10,border:'1px solid rgba(255,80,80,.12)',marginBottom:12}},
-              '🔴 Live HeyGen -- real-time Anna lip-sync. Uses HeyGen credits per session. Get key at app.heygen.com/settings'
+              '🔴 Live HeyGen -- real-time Mia lip-sync. Uses HeyGen credits per session. Get key at app.heygen.com/settings'
             ),
             h('div',{style:{marginBottom:10}},
               h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
@@ -4335,7 +4092,7 @@ function AdminSettingsPanel({showToast}){
             ),
             h('div',null,
               h('label',{className:'label'},'Avatar ID (optional)'),
-              h('input',{value:cfg.heygenAvatarId||'',onChange:e=>p('heygenAvatarId')(e.target.value),placeholder:'e.g. avatar_Anna_standing',className:'field'})
+              h('input',{value:cfg.heygenAvatarId||'',onChange:e=>p('heygenAvatarId')(e.target.value),placeholder:'e.g. avatar_Mia_standing',className:'field'})
             )
           )
     ),
@@ -4438,7 +4195,7 @@ function AdminSettingsPanel({showToast}){
     // -- 7. Language & Text-to-Speech --
     h(Accord,{id:'language',emoji:'🌐',label:'Language & Read Aloud'},
       h('div',{style:{fontSize:12,color:'var(--text2)',lineHeight:1.5,marginBottom:14}},
-        'Anna\'s chat replies will be written (and optionally spoken) in the selected language. Avatar videos always remain in English.'
+        'Mia\'s chat replies will be written (and optionally spoken) in the selected language. Avatar videos always remain in English.'
       ),
 
       // Language picker
@@ -4458,8 +4215,8 @@ function AdminSettingsPanel({showToast}){
             h('div',{style:{fontSize:12,fontWeight:700,color:'var(--text1)'}},(LANGUAGES.find(l=>l.code===(cfg.language||'en-US'))||LANGUAGES[0]).label),
             h('div',{style:{fontSize:10,color:'var(--text3)'}},
               (cfg.language||'en-US').startsWith('en')
-                ? 'Anna replies in English -- default'
-                : 'Anna will reply in '+(LANGUAGES.find(l=>l.code===(cfg.language||'en-US'))||LANGUAGES[0]).groq+'. ITEM: tags stay in English.'
+                ? 'Mia replies in English -- default'
+                : 'Mia will reply in '+(LANGUAGES.find(l=>l.code===(cfg.language||'en-US'))||LANGUAGES[0]).groq+'. ITEM: tags stay in English.'
             )
           )
         )
@@ -4488,16 +4245,16 @@ function AdminSettingsPanel({showToast}){
           onClick:()=>{
             const lang = LANGUAGES.find(l=>l.code===(cfg.language||'en-US'))||LANGUAGES[0];
             const testPhrases = {
-              'en':"Hello! I am Anna, your AI host. Welcome to Stella's!",
-              'es':"¡Hola! Soy Anna, tu anfitriona. ¡Bienvenido a Stella's!",
-              'fr':"Bonjour! Je suis Anna, votre hôtesse. Bienvenue chez Stella's!",
-              'pt':"Olá! Sou a Anna, sua anfitriã. Bem-vindo ao Stella's!",
+              'en':"Hello! I am Mia, your AI host. Welcome to Stella's!",
+              'es':"¡Hola! Soy Mia, tu anfitriona. ¡Bienvenido a Stella's!",
+              'fr':"Bonjour! Je suis Mia, votre hôtesse. Bienvenue chez Stella's!",
+              'pt':"Olá! Sou a Mia, sua anfitriã. Bem-vindo ao Stella's!",
               'fa':'سلام! من میا هستم، میزبان هوش مصنوعی شما. به موکسیز خوش آمدید!',
-              'it':"Ciao! Sono Anna, la tua ospite. Benvenuto da Stella's!",
-              'nl':"Hallo! Ik ben Anna, uw gastheer. Welkom bij Stella's!",
-              'zh':"您好！我是Anna，您的AI接待员。欢迎来到Stella's！",
-              'hi':"नमस्ते! मैं Anna हूँ, आपकी AI होस्ट। Stella's में आपका स्वागत है!",
-              'pa':"ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ Anna ਹਾਂ, ਤੁਹਾਡੀ AI ਹੋਸਟੈੱਸ। Stella's ਵਿੱਚ ਤੁਹਾਡਾ ਸੁਆਗਤ ਹੈ!",
+              'it':"Ciao! Sono Mia, la tua ospite. Benvenuto da Stella's!",
+              'nl':"Hallo! Ik ben Mia, uw gastheer. Welkom bij Stella's!",
+              'zh':"您好！我是Mia，您的AI接待员。欢迎来到Stella's！",
+              'hi':"नमस्ते! मैं Mia हूँ, आपकी AI होस्ट। Stella's में आपका स्वागत है!",
+              'pa':"ਸਤ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ Mia ਹਾਂ, ਤੁਹਾਡੀ AI ਹੋਸਟੈੱਸ। Stella's ਵਿੱਚ ਤੁਹਾਡਾ ਸੁਆਗਤ ਹੈ!",
             };
             const base = lang.code.split('-')[0];
             const phrase = testPhrases[base] || testPhrases['en'];
@@ -5017,278 +4774,6 @@ function MyOrderScreen({onViewOrder}){
   );
 }
 
-
-// ==========================================
-// ADMIN - CAROUSEL SETTINGS
-// Configure which items appear in the carousel, trigger phrases,
-// and display behaviour. Settings saved to localStorage.
-// ==========================================
-function AdminCarousel({menu, showToast}){
-  const KEY = 'stellas_carousel_cfg';
-  const DEF = {
-    enabled: true,
-    popupMode: 'voice',      // 'voice' | 'always'
-    style: 'overlay',        // 'overlay' | 'below'
-    showPrice: true,
-    showAddBtn: true,
-    addBtnLabel: '+ Add',
-    triggers: [],            // [{phrase, itemIds:[]}]
-    pinnedIds: [],           // always show these items regardless of query
-  };
-
-  const load = () => { try{ return {...DEF,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }catch(e){ return DEF; } };
-  const [cfg, setCfg] = useState(load);
-  const [newPhrase, setNewPhrase] = useState('');
-  const [newPhraseItems, setNewPhraseItems] = useState([]);
-  const [editIdx, setEditIdx] = useState(null);
-  const [section, setSection] = useState('triggers'); // 'triggers' | 'pinned' | 'display'
-
-  function save(nextCfg){
-    const c = nextCfg || cfg;
-    localStorage.setItem(KEY, JSON.stringify(c));
-    setCfg(c);
-    showToast('✓ Carousel saved');
-  }
-  function upd(k,v){ setCfg(p => ({...p,[k]:v})); }
-
-  const visibleItems = menu.filter(i => i.visible);
-
-  // --- TRIGGER CRUD ---
-  function addTrigger(){
-    if(!newPhrase.trim()){ showToast('Enter a trigger phrase first'); return; }
-    if(!newPhraseItems.length){ showToast('Select at least one item'); return; }
-    const t = {phrase: newPhrase.trim().toLowerCase(), itemIds: newPhraseItems};
-    const next = {...cfg, triggers:[...cfg.triggers, t]};
-    save(next); setNewPhrase(''); setNewPhraseItems([]);
-  }
-  function deleteTrigger(i){
-    const next = {...cfg, triggers: cfg.triggers.filter((_,idx)=>idx!==i)};
-    save(next);
-  }
-  function toggleTriggerItem(id){
-    setNewPhraseItems(p => p.includes(id) ? p.filter(x=>x!==id) : [...p,id]);
-  }
-  function togglePinned(id){
-    const next = {...cfg, pinnedIds: cfg.pinnedIds.includes(id) ? cfg.pinnedIds.filter(x=>x!==id) : [...cfg.pinnedIds,id]};
-    save(next);
-  }
-
-  const tabStyle = active => ({
-    padding:'8px 16px', borderRadius:'8px 8px 0 0', border:'none', cursor:'pointer',
-    fontFamily:"'Lato',sans-serif", fontSize:13, fontWeight:700,
-    background: active ? 'white' : 'rgba(201,168,76,.12)',
-    color: active ? 'var(--text1)' : 'var(--text3)',
-    borderBottom: active ? '2px solid var(--gold)' : '2px solid transparent',
-  });
-
-  const pill = (label, active, onClick) => h('button',{
-    onClick, style:{
-      padding:'6px 14px', borderRadius:20, border:'1.5px solid var(--gold)', fontSize:12,
-      fontWeight:700, cursor:'pointer', fontFamily:"'Lato',sans-serif",
-      background: active ? 'var(--green)' : 'transparent',
-      color: active ? 'white' : 'var(--text2)',
-    }
-  }, label);
-
-  return h('div', null,
-
-    // Header
-    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Carousel Settings'),
-      h('label',{className:'tgl'},
-        h('input',{type:'checkbox',checked:cfg.enabled,onChange:e=>{ const n={...cfg,enabled:e.target.checked}; save(n); }}),
-        h('span',{className:'tgl-slider'})
-      )
-    ),
-    h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:16,lineHeight:1.5}},
-      cfg.enabled
-        ? 'Carousel is ON — scrollable cards appear over Anna\'s photo when she shows a group of items.'
-        : 'Carousel is OFF — Anna lists items in the text bubble only.'
-    ),
-
-    // Section tabs
-    h('div',{style:{display:'flex',gap:4,marginBottom:16,borderBottom:'2px solid rgba(201,168,76,.2)'}},
-      h('button',{style:tabStyle(section==='triggers'),onClick:()=>setSection('triggers')},'⚡ Triggers'),
-      h('button',{style:tabStyle(section==='pinned'),onClick:()=>setSection('pinned')},'📌 Pinned Items'),
-      h('button',{style:tabStyle(section==='display'),onClick:()=>setSection('display')},'🎨 Display')
-    ),
-
-    // ── TRIGGERS TAB ──
-    section==='triggers'&&h('div',null,
-      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
-        'Set phrases that trigger the carousel with specific items. When someone says that phrase, Anna shows those items as cards.'
-      ),
-
-      // Existing triggers list
-      cfg.triggers.length===0&&h('div',{style:{
-        textAlign:'center',padding:'24px 16px',background:'rgba(201,168,76,.06)',
-        borderRadius:12,border:'1.5px dashed var(--gold)',marginBottom:16,color:'var(--text3)',fontSize:13
-      }},'No triggers yet — add one below'),
-
-      cfg.triggers.map((t,i) => {
-        const items = t.itemIds.map(id => visibleItems.find(it=>it.id===id)).filter(Boolean);
-        return h('div',{key:i,className:'glass',style:{padding:14,marginBottom:10}},
-          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},
-            h('div',null,
-              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},'"'+t.phrase+'"'),
-              h('div',{style:{fontSize:11,color:'var(--text3)'}},items.length+' item'+(items.length!==1?'s':''))
-            ),
-            h('button',{onClick:()=>deleteTrigger(i),style:{background:'rgba(220,60,60,.08)',border:'1px solid rgba(220,60,60,.25)',borderRadius:8,padding:'5px 10px',fontSize:12,fontWeight:700,cursor:'pointer',color:'var(--red)',fontFamily:"'Lato',sans-serif"}},'Delete')
-          ),
-          // Item chips
-          h('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
-            items.map(it=>h('div',{key:it.id,style:{
-              display:'flex',alignItems:'center',gap:6,padding:'4px 10px',
-              background:'rgba(42,90,64,.1)',borderRadius:20,fontSize:12,color:'var(--green2)'
-            }},
-              it.imgUrl&&h('img',{src:it.imgUrl,style:{width:20,height:20,borderRadius:4,objectFit:'cover'}}),
-              it.name,' · $'+it.price
-            ))
-          )
-        );
-      }),
-
-      // Add new trigger
-      h('div',{className:'glass',style:{padding:16,marginTop:8}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'+ Add Trigger'),
-
-        h('div',{className:'form-group'},
-          h('label',{className:'label'},'Trigger phrase'),
-          h('input',{
-            value:newPhrase,
-            onChange:e=>setNewPhrase(e.target.value),
-            placeholder:'e.g. show me drinks, what\'s good tonight',
-            className:'field'
-          }),
-          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'When someone says this, the carousel shows the items you pick below.')
-        ),
-
-        h('div',{className:'form-group'},
-          h('label',{className:'label'},'Items to show'),
-          h('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:8}},'Tap to select — these cards appear in the carousel for this phrase.'),
-          h('div',{style:{display:'flex',flexDirection:'column',gap:6,maxHeight:280,overflowY:'auto'}},
-            visibleItems.map(it => {
-              const selected = newPhraseItems.includes(it.id);
-              return h('div',{
-                key:it.id,
-                onClick:()=>toggleTriggerItem(it.id),
-                style:{
-                  display:'flex',alignItems:'center',gap:10,padding:'9px 12px',
-                  borderRadius:10,cursor:'pointer',border:'1.5px solid',
-                  borderColor: selected ? 'var(--green2)' : 'rgba(201,168,76,.3)',
-                  background: selected ? 'rgba(42,90,64,.08)' : 'white',
-                }
-              },
-                it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:40,height:40,borderRadius:8,objectFit:'cover',flexShrink:0}}),
-                h('div',{style:{flex:1}},
-                  h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' · '+it.name),
-                  h('div',{style:{fontSize:11,color:'var(--text3)'}},'✦ '+it.cat)
-                ),
-                h('div',{style:{
-                  width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
-                  borderColor:selected?'var(--green2)':'var(--gold)',
-                  background:selected?'var(--green2)':'transparent',
-                  display:'flex',alignItems:'center',justifyContent:'center',
-                  color:'white',fontSize:13,fontWeight:700
-                }},selected?'✓':'')
-              );
-            })
-          )
-        ),
-
-        h('button',{
-          className:'btn btn-green',
-          style:{width:'100%',marginTop:4},
-          onClick:addTrigger
-        },'Add Trigger ('+newPhraseItems.length+' item'+(newPhraseItems.length!==1?'s':'')+')')
-      )
-    ),
-
-    // ── PINNED ITEMS TAB ──
-    section==='pinned'&&h('div',null,
-      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
-        'Pinned items always appear at the front of every carousel, no matter what was asked.'
-      ),
-      h('div',{style:{display:'flex',flexDirection:'column',gap:6}},
-        visibleItems.map(it => {
-          const pinned = cfg.pinnedIds.includes(it.id);
-          return h('div',{
-            key:it.id,
-            onClick:()=>togglePinned(it.id),
-            style:{
-              display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
-              borderRadius:10,cursor:'pointer',border:'1.5px solid',
-              borderColor:pinned?'var(--green2)':'rgba(201,168,76,.3)',
-              background:pinned?'rgba(42,90,64,.08)':'white',
-            }
-          },
-            it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:44,height:44,borderRadius:8,objectFit:'cover',flexShrink:0}}),
-            h('div',{style:{flex:1}},
-              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' · '+it.name),
-              h('div',{style:{fontSize:11,color:'var(--text3)'}},'✦ '+it.cat)
-            ),
-            h('div',{style:{
-              width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
-              borderColor:pinned?'var(--green2)':'var(--gold)',
-              background:pinned?'var(--green2)':'transparent',
-              display:'flex',alignItems:'center',justifyContent:'center',
-              color:'white',fontSize:13,fontWeight:700
-            }},pinned?'📌':'')
-          );
-        })
-      ),
-      cfg.pinnedIds.length>0&&h('button',{
-        className:'btn btn-gold btn-sm',
-        style:{marginTop:12,width:'100%'},
-        onClick:()=>save({...cfg,pinnedIds:[]})
-      },'Clear all pinned')
-    ),
-
-    // ── DISPLAY TAB ──
-    section==='display'&&h('div',null,
-
-      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'When to pop up'),
-        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}},
-          pill('🎤 After voice query', cfg.popupMode==='voice', ()=>upd('popupMode','voice')),
-          pill('Always', cfg.popupMode==='always', ()=>upd('popupMode','always'))
-        ),
-        h('div',{style:{fontSize:11,color:'var(--text3)'}},
-          cfg.popupMode==='voice'
-            ? 'Carousel only pops up after spoken queries — text chat shows a list instead.'
-            : 'Carousel appears on both voice and text chat responses.'
-        )
-      ),
-
-      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'Card content'),
-        h('div',{style:{display:'flex',flexDirection:'column',gap:14}},
-          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
-            h('span',{style:{fontSize:13,color:'var(--text2)'}},'Show price on card'),
-            h('label',{className:'tgl'},
-              h('input',{type:'checkbox',checked:cfg.showPrice,onChange:e=>upd('showPrice',e.target.checked)}),
-              h('span',{className:'tgl-slider'})
-            )
-          ),
-          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
-            h('span',{style:{fontSize:13,color:'var(--text2)'}},'"+ Add" button'),
-            h('label',{className:'tgl'},
-              h('input',{type:'checkbox',checked:cfg.showAddBtn,onChange:e=>upd('showAddBtn',e.target.checked)}),
-              h('span',{className:'tgl-slider'})
-            )
-          ),
-          cfg.showAddBtn&&h('div',null,
-            h('label',{className:'label'},'Button label'),
-            h('input',{value:cfg.addBtnLabel,onChange:e=>upd('addBtnLabel',e.target.value),className:'field',placeholder:'+ Add'})
-          )
-        )
-      ),
-
-      h('button',{className:'btn btn-green',style:{width:'100%'},onClick:()=>save()},'✓ Save Display Settings')
-    )
-  );
-}
-
 // ==========================================
 // -------- MAIN APP ------------------------
 // ==========================================
@@ -5325,8 +4810,6 @@ function App(){
   const[showTakeoutCart,setShowTakeoutCart]=useState(false);
   const[pendingTakeoutItem,setPendingTakeoutItem]=useState(null);
   const[takeoutConfirmed,setTakeoutConfirmed]=useState(null);
-  const[carouselItems,setCarouselItems]=useState([]);
-  const[carouselLabel,setCarouselLabel]=useState('');
   const recRef=useRef();
 
   // Load data: Supabase first, IndexedDB fallback -- runs on every mount
@@ -5414,87 +4897,69 @@ function App(){
   // Voice -- robust, works from table URLs
   function startListening(){
     setTranscript('');setOrdered(false);
-    stopTTS();
-
+    stopTTS(); // cancel any reading aloud before listening starts
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     if(!SR){ setShowText(true); return; }
 
-    // Kill any previous recognition instance cleanly before creating a new one
-    // This is the fix for "mic unavailable after first use" on iOS Safari
-    if(recRef.current){
-      try{ recRef.current.onresult=null; recRef.current.onerror=null; recRef.current.onend=null; recRef.current.abort(); }catch(e){}
-      recRef.current=null;
-    }
-
+    // Resume AudioContext synchronously inside this gesture handler (iOS requirement)
     try{
       const AC=window.AudioContext||window.webkitAudioContext;
       if(AC){ const ac=new AC(); ac.resume().catch(()=>{}); }
     }catch(e){}
 
-    forceUnlock();
+    forceUnlock(); // also unmute any pending videos
+
     setScreen('listening');
     setThinking(false);
 
-    // Small delay after killing old instance so iOS releases the mic hardware
-    setTimeout(()=>{
-      function attempt(retriesLeft){
-        try{
-          const r=new SR();
-          r.continuous=false;
-          r.interimResults=true;
-          r.lang='en-US';
-          recRef.current=r;
-          let handled=false;
+    // Defer r.start() one microtask so React can flush the screen change first
+    // This prevents the iOS race where setScreen re-render cancels the mic grant
+    Promise.resolve().then(()=>{
+      try{
+        const r=new SR();
+        r.continuous=false;
+        r.interimResults=true;
+        r.lang='en-US';
+        recRef.current=r;
+        let handled=false;
 
-          r.onresult=e=>{
-            const t=Array.from(e.results).map(x=>x[0].transcript).join('');
-            setTranscript(t);
-            if(e.results[e.results.length-1].isFinal){
-              handled=true;
-              try{r.stop();}catch(e){}
-              processVoiceText(t);
-            }
-          };
+        r.onresult=e=>{
+          const t=Array.from(e.results).map(x=>x[0].transcript).join('');
+          setTranscript(t);
+          if(e.results[e.results.length-1].isFinal){
+            handled=true;
+            r.stop();
+            processVoiceText(t);
+          }
+        };
 
-          r.onerror=e=>{
-            console.warn('[Voice] Error:',e.error,'retriesLeft:',retriesLeft);
-            if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-              handled=true;
-              setScreen('home');
-              showToast('Mic permission needed — tap Allow when prompted');
-            } else if((e.error==='aborted'||e.error==='network')&&retriesLeft>0){
-              // Clean up and retry after a short pause
-              try{r.onresult=null;r.onerror=null;r.onend=null;}catch(x){}
-              setTimeout(()=>attempt(retriesLeft-1), 400);
-            } else if(e.error==='no-speech'){
-              handled=true;
-              setScreen('home');
-            } else {
-              handled=true;
-              setScreen('home');
-              showToast('Mic unavailable — use text chat instead');
-            }
-          };
-
-          r.onend=()=>{
-            if(handled)return;
+        r.onerror=e=>{
+          handled=true;
+          console.warn('[Voice] Error:',e.error);
+          if(e.error==='not-allowed'||e.error==='service-not-allowed'){
             setScreen('home');
-          };
-
-          r.start();
-          console.log('[Voice] Listening started');
-        }catch(err){
-          console.error('[Voice] Failed to start:',err.message);
-          if(retriesLeft>0){
-            setTimeout(()=>attempt(retriesLeft-1), 500);
+            showToast('Mic permission needed -- tap Allow when prompted');
+          } else if(e.error==='no-speech'){
+            setScreen('home'); // silent fail, don't toast
           } else {
             setScreen('home');
-            showToast('Mic unavailable — use text chat instead');
+            showToast('Mic issue: '+e.error+' -- try again or use text chat');
           }
-        }
+        };
+
+        r.onend=()=>{
+          if(handled)return;
+          setScreen('home');
+        };
+
+        r.start();
+        console.log('[Voice] Listening started');
+      }catch(err){
+        console.error('[Voice] Failed to start:',err);
+        setScreen('home');
+        showToast('Microphone unavailable -- use the text chat button instead');
       }
-      attempt(2);
-    }, 120);
+    });
   }
 
   // Separated from startListening so it always has fresh state via closure
@@ -5503,22 +4968,6 @@ function App(){
     console.log('[Voice] Processing:', text, '| Table mode:', tableNum||'none');
     setThinking(true);
     try{
-    // -- Priority -1: Check carousel triggers (Admin > Carousel tab) first --
-    const carouselVoiceHit = matchCarouselTrigger(text, menu);
-    if(carouselVoiceHit){
-      console.log("[Carousel] Voice trigger matched:", carouselVoiceHit.label);
-      setThinking(false);
-      setCarouselItems(carouselVoiceHit.items);
-      setCarouselLabel(carouselVoiceHit.label);
-      setAiResponse(carouselVoiceHit.response);
-      setSelectedItem(null);
-      setVideoUrl("");
-      setOrdered(false);
-      setHeygenFallback(false);
-      setScreen("response");
-      return;
-    }
-
     // -- Priority 0: Scan ALL menu item triggers first (works from any screen) --
     // Then also check activeItem/selectedItem for context-specific triggers
     const globalVoiceTrigger = matchAnyMenuTrigger(text, menu);
@@ -5587,25 +5036,9 @@ function App(){
       return;
     }
 
-      const{response,item,videoUrl:vid,noKey,orderIntent,ingredientMatches:vCarousel,searchTerm:vTerm}=await askAI(text,menu,messages,tableNum,faq||[]);
+      const{response,item,videoUrl:vid,noKey,orderIntent}=await askAI(text,menu,messages,tableNum,faq||[]);
       setThinking(false);
       if(noKey){showToast(response);setScreen('home');return;}
-
-      // Carousel — category/group query result
-      if(vCarousel&&vCarousel.length>0){
-        setCarouselItems(vCarousel);
-        setCarouselLabel(vTerm||'');
-        setAiResponse(response||"Here's what we have!");
-        setSelectedItem(null);
-        setVideoUrl('');
-        setOrdered(false);
-        setHeygenFallback(false);
-        setScreen('response');
-        speakReply(response);
-        return;
-      }
-      setCarouselItems([]);
-      setCarouselLabel('');
 
       // CRITICAL: always update activeItem from voice result so context phrases work
       if(item){ setActiveItem(item); console.log('[Voice] Current item on page:', item.name); }
@@ -5818,7 +5251,7 @@ function App(){
     setScreen('response');
   }
   
-  // Called when a home screen card is tapped -- auto-asks Anna about that item
+  // Called when a home screen card is tapped -- auto-asks Mia about that item
   async function handleCardAsk(item, customQuestion){
     const question = customQuestion || (item ? 'Tell me about the '+item.name : '');
     if(!question) return;
@@ -5914,12 +5347,10 @@ function App(){
     {id:'takeout',label:'Takeout',icon:I.bag},
     {id:'menu',label:'Menu',icon:I.menu},
     {id:'messages',label:'Messages',icon:I.msg},
-    {id:'carousel',label:'Carousel',icon:I.promote},
     {id:'faq',label:'FAQ',icon:I.star},
     {id:'qr',label:'QR Codes',icon:I.qr},
     {id:'analytics',label:'Analytics',icon:I.star},
     {id:'settings',label:'Settings',icon:I.gear},
-    {id:'bulk',label:'Bulk Import',icon:I.download},
   ];
 
   return h('div',{style:{display:'flex',flexDirection:'column',height:'100%',width:'100%',background:'var(--cream)',position:'relative',overflow:'hidden'}},
@@ -5986,12 +5417,10 @@ function App(){
         adminTab==='takeout'&&h(AdminTakeout,{showToast}),
         adminTab==='menu'&&h(AdminMenu,{menu,setMenu,showToast}),
         adminTab==='messages'&&h(AdminMessages,{messages,setMessages,showToast}),
-        adminTab==='carousel'&&h(AdminCarousel,{menu,showToast}),
         adminTab==='faq'&&h(AdminFAQ,{faq,setFaq,showToast}),
         adminTab==='qr'&&h(AdminQR,{tableOrders}),
         adminTab==='analytics'&&h(AdminAnalytics,{tableOrders}),
         adminTab==='settings'&&h(AdminSettingsPanel,{showToast}),
-        adminTab==='bulk'&&h(AdminBulkImport,{showToast,setMenu,loadMenuData}),
       )
     ),
     
@@ -6018,7 +5447,7 @@ function App(){
     
     !showAdmin&&screen==='home'&&h(HomeScreen,{menu,messages,onSpeak:()=>{forceUnlock();startListening();},onItemSelect:handleItemSelect,onCardAsk:handleCardAsk,tableNum,homeTitles:store.get('stellas_home_titles',homeTitles)}),
     !showAdmin&&screen==='listening'&&h(ListeningScreen,{transcript,onStop:stopListen,thinking,staticImgSrc:getWelcomeImage(messages)||''}),
-    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd:(it)=>{if(tableNum){placeOrder(it);}else{setTakeoutCart(c=>[...c,it]);showToast('✓ '+it.name+' added!');}}}),
+    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback}),
     !showAdmin&&screen==='menu'&&h(MenuScreen,{menu,onItemSelect:handleItemSelect}),
     !showAdmin&&screen==='locations'&&h(LocationsScreen),
     !showAdmin&&screen==='myorder'&&h(MyOrderScreen,{key:orderVersion,
@@ -6044,389 +5473,7 @@ function App(){
       ].map(item=>h('button',{key:item.id,className:`nav-btn ${navTab===item.id?'active':''}`,onClick:()=>handleNav(item.id)},h('div',{style:{width:22,height:22}},item.icon),h('span',null,item.label)))
     ),
     
-    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,onCarousel:(items,label,resp)=>{setCarouselItems(items);setCarouselLabel(label||'');setAiResponse(resp||"Here's what we have!");setSelectedItem(null);setVideoUrl('');setOrdered(false);setHeygenFallback(false);setScreen('response');setNavTab('home');},tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
-  );
-}
-
-
-// ══════════════════════════════════════════════════════════
-// ADMIN — BULK IMPORT TAB
-// Uses the app's own sbUpsert() + menuToSB() for correct field mapping
-// ══════════════════════════════════════════════════════════
-function AdminBulkImport({showToast}) {
-  const[mediaFiles,setMediaFiles]=useState({});
-  const[uploadedMedia,setUploadedMedia]=useState({});
-  const[parsedRows,setParsedRows]=useState([]);
-  const[mediaProgress,setMediaProgress]=useState(0);
-  const[mediaStatus,setMediaStatus]=useState('');
-  const[importProgress,setImportProgress]=useState(0);
-  const[importStatus,setImportStatus]=useState('');
-  const[rowStatuses,setRowStatuses]=useState({});
-  const[importing,setImporting]=useState(false);
-  const[uploadingMedia,setUploadingMedia]=useState(false);
-  const[connStatus,setConnStatus]=useState('');
-  const fileRef=useRef();
-  const csvRef=useRef();
-
-  const cfg=sbCfg();
-  const connected=!!cfg;
-  const sbBucket=store.get('stellas_sb_bucket','videos')||'videos';
-
-  async function testConn(){
-    if(!cfg){setConnStatus('Set Supabase URL & Key in Settings first');return;}
-    setConnStatus('Testing...');
-    try{
-      const r=await fetch(cfg.url+'/rest/v1/menu_items?limit=1',{
-        headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key}
-      });
-      setConnStatus(r.ok?'Connected! Ready to import.':'Error '+r.status);
-    }catch(e){setConnStatus('Error: '+e.message);}
-  }
-
-  function parseCSVLine(line){
-    const r=[];let cur='';let inQ=false;
-    for(let i=0;i<line.length;i++){
-      if(line[i]==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
-      else if(line[i]===','&&!inQ){r.push(cur);cur='';}
-      else cur+=line[i];
-    }
-    r.push(cur);return r;
-  }
-
-  function parseCSV(text){
-    // Strip BOM, normalize Windows \r\n and Mac \r line endings
-    text=text.replace(/^\uFEFF/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
-    const lines=text.split('\n').filter(function(l){return l.trim();});
-    if(lines.length<2){console.warn('[Bulk] CSV has fewer than 2 lines');return[];}
-    const headers=parseCSVLine(lines[0]).map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');});
-    console.log('[Bulk] CSV headers found:',headers);
-    const rows=[];
-    for(var i=1;i<lines.length;i++){
-      if(!lines[i].trim())continue;
-      const vals=parseCSVLine(lines[i]);
-      const row={};
-      headers.forEach(function(h,idx){row[h]=(vals[idx]||'').trim();});
-      // Accept row if it has a name field (check multiple possible column names)
-      const rowName=row.name||row.item_name||row.item||'';
-      if(rowName){
-        if(!row.name)row.name=rowName; // normalize to 'name'
-        rows.push(row);
-      }
-    }
-    console.log('[Bulk] Parsed',rows.length,'rows from',lines.length-1,'data lines');
-    return rows;
-  }
-
-  function downloadTemplate(){
-    const hdr='name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible';
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([hdr+'\n'],{type:'text/csv'}));
-    a.download='stellas_menu_template.csv';a.click();
-  }
-
-  function downloadExample(){
-    const rows=[
-      'name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible',
-      'Margherita Pizza,18,Mains,Classic pizza with San Marzano tomatoes and fresh mozzarella,flour|tomato|mozzarella|basil,margherita.jpg,margherita.mp4,"tell me about the margherita, show me the pizza",item-request,true',
-      'Pepperoni Pizza,21,Mains,House sauce with pepperoni and mozzarella,flour|tomato|mozzarella|pepperoni,pepperoni.jpg,,"pepperoni pizza",item-request,true',
-      'Tiramisu,12,Desserts,Classic tiramisu with mascarpone and espresso-soaked ladyfingers,mascarpone|espresso|ladyfingers|cocoa,tiramisu.jpg,tiramisu.mp4,"show me desserts, tiramisu",item-request,true',
-    ];
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
-    a.download='stellas_menu_example.csv';a.click();
-  }
-
-  function handleMediaFiles(files){
-    const nf={...mediaFiles};
-    for(const f of files)nf[f.name]=f;
-    setMediaFiles(nf);
-  }
-
-  async function uploadAllMedia(){
-    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
-    const files=Object.values(mediaFiles);
-    if(!files.length){showToast('No files selected');return;}
-    setUploadingMedia(true);
-    const uploaded={...uploadedMedia};
-    for(let i=0;i<files.length;i++){
-      const f=files[i];
-      setMediaStatus('Uploading '+f.name+' ('+(i+1)+'/'+files.length+')...');
-      setMediaProgress(Math.round(i/files.length*100));
-      try{
-        const res=await fetch(cfg.url+'/storage/v1/object/'+sbBucket+'/'+encodeURIComponent(f.name),{
-          method:'POST',
-          headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key,'Content-Type':f.type,'x-upsert':'true'},
-          body:f
-        });
-        if(res.ok||res.status===200){
-          uploaded[f.name]=cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(f.name);
-        } else {
-          const t=await res.text();
-          console.error('[Bulk] Upload failed:',f.name,res.status,t);
-        }
-      }catch(e){console.warn('[Bulk] Upload error:',f.name,e.message);}
-    }
-    setUploadedMedia(uploaded);
-    setMediaProgress(100);
-    const n=Object.keys(uploaded).length;
-    setMediaStatus(n+' file'+(n!==1?'s':'')+' uploaded!');
-    setUploadingMedia(false);
-    showToast(n+' files uploaded!');
-  }
-
-  function handleCSV(file){
-    if(!file)return;
-    const reader=new FileReader();
-    reader.onload=function(e){
-      const rows=parseCSV(e.target.result);
-      if(!rows.length){showToast('No valid rows found in CSV');return;}
-      setParsedRows(rows);
-      setRowStatuses({});
-      setImportProgress(0);
-      setImportStatus('');
-      showToast(rows.length+' items parsed and ready to import');
-    };
-    reader.readAsText(file);
-  }
-
-  async function importAll(){
-    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
-    if(!parsedRows.length){showToast('Upload a CSV first');return;}
-    setImporting(true);
-    const statuses={};
-    let ok=0,fail=0;
-    for(let i=0;i<parsedRows.length;i++){
-      const row=parsedRows[i];
-      statuses[i]='importing';
-      setRowStatuses({...statuses});
-      setImportProgress(Math.round(i/parsedRows.length*100));
-      setImportStatus('Importing '+row.name+'... ('+(i+1)+'/'+parsedRows.length+')');
-      try{
-        const imgFile=row.image_filename||row.image||'';
-        const vidFile=row.video_filename||row.video||'';
-        const imgUrl=uploadedMedia[imgFile]
-          ||(imgFile&&imgFile.startsWith('http')?imgFile:'')
-          ||(imgFile?cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(imgFile):'')
-          ||row.img_url||'';
-        const vidUrl=uploadedMedia[vidFile]
-          ||(vidFile&&vidFile.startsWith('http')?vidFile:'')
-          ||row.video_url||'';
-        const trigKw=row.trigger_keywords||'';
-        const trigAction=row.trigger_action||'item-request';
-        const triggers=trigKw?[{keywords:trigKw,action:trigAction,videoFilename:vidFile}]:[];
-        // Build using JS app's field names so menuToSB() maps them correctly
-        const item={
-          id:Date.now()*100+i,
-          name:row.name,
-          price:parseFloat(row.price)||0,
-          cat:row.category||row.cat||'Mains',
-          desc:row.description||row.desc||'',
-          ing:(row.ingredients||row.ing||'').replace(/\|/g,', '),
-          imgUrl:imgUrl,
-          videoUrl:vidUrl,
-          videoFilename:vidFile,
-          visible:row.visible!=='false',
-          triggerKeywords:trigKw,
-          triggerType:trigAction,
-          triggers:triggers,
-        };
-        // Use the app's own sbUpsert+menuToSB — exact same path as saving from Menu tab
-        await sbUpsert('menu_items', menuToSB(item));
-        ok++;
-        statuses[i]='ok';
-      }catch(e){
-        console.error('[Bulk] Failed:',row.name,e.message);
-        fail++;
-        statuses[i]='fail';
-      }
-      setRowStatuses({...statuses});
-      await new Promise(function(resolve){setTimeout(resolve,150);});
-    }
-    setImportProgress(100);
-    setImportStatus(ok+' imported'+(fail>0?', '+fail+' failed! Check console for errors.':'! Reloading menu...'));
-    setImporting(false);
-    showToast(ok+' items imported!');
-    // Reload menu from Supabase so new items appear immediately without page refresh
-    if(ok>0 && loadMenuData && setMenu){
-      try{
-        const freshMenu=await loadMenuData();
-        if(freshMenu&&freshMenu.length){
-          setMenu(freshMenu);
-          showToast('Menu updated — '+freshMenu.length+' total items loaded!');
-          setImportStatus(ok+' items imported and menu refreshed!');
-        }
-      }catch(e){
-        console.warn('[Bulk] Menu reload failed:',e);
-        showToast('Imported! Refresh the page to see new items.');
-      }
-    }
-  }
-
-  const mediaCount=Object.keys(mediaFiles).length;
-  const dropStyle={border:'2px dashed var(--gold)',borderRadius:14,padding:24,textAlign:'center',cursor:'pointer',background:'rgba(201,168,76,.04)'};
-
-  function ProgBar({pct}){
-    return h('div',{style:{height:6,background:'rgba(201,168,76,.2)',borderRadius:3,overflow:'hidden',margin:'6px 0'}},
-      h('div',{style:{height:'100%',background:'linear-gradient(to right,var(--green2),var(--gold))',width:pct+'%',transition:'width .3s'}})
-    );
-  }
-
-  function SPill({s}){
-    if(!s)return h('span',{style:{fontSize:11,color:'var(--text3)'}},'Ready');
-    if(s==='importing')return h('span',{style:{fontSize:11,background:'rgba(201,168,76,.15)',color:'var(--gold3)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'...');
-    if(s==='ok')return h('span',{style:{fontSize:11,background:'rgba(42,90,64,.12)',color:'var(--green2)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Saved');
-    return h('span',{style:{fontSize:11,background:'rgba(220,60,60,.1)',color:'var(--red)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Failed');
-  }
-
-  return h('div',null,
-
-    h('div',{style:{marginBottom:16}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Bulk Menu Import'),
-      h('div',{style:{fontSize:12,color:'var(--text3)',marginTop:2}},'Upload a CSV + images/videos to populate your menu at once')
-    ),
-
-    h('div',{className:'glass',style:{padding:12,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}},
-      h('div',null,
-        connected
-          ? h('span',{style:{fontSize:13,color:'var(--green2)',fontWeight:700}},'Supabase connected')
-          : h('span',{style:{fontSize:13,color:'var(--red)'}},'No Supabase credentials — go to Settings tab'),
-        connStatus&&h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:3}},connStatus)
-      ),
-      h('button',{className:'btn btn-gold btn-sm',onClick:testConn},'Test Connection')
-    ),
-
-    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Download CSV Template'),
-      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))',gap:6,marginBottom:12}},
-        [{n:'name',d:'Required'},{n:'price',d:'Required'},{n:'category',d:'Starters, Mains...'},
-         {n:'description',d:'Item description'},{n:'ingredients',d:'Use | between items'},
-         {n:'image_filename',d:'e.g. pizza.jpg'},{n:'video_filename',d:'e.g. pizza.mp4'},
-         {n:'trigger_keywords',d:'comma-separated'},{n:'trigger_action',d:'item-request'},
-         {n:'visible',d:'true or false'}
-        ].map(function(c){
-          return h('div',{key:c.n,style:{background:'rgba(42,90,64,.08)',border:'1px solid rgba(42,90,64,.2)',borderRadius:8,padding:'5px 8px'}},
-            h('div',{style:{fontSize:11,fontWeight:700,color:'var(--green2)'}},c.n),
-            h('div',{style:{fontSize:10,color:'var(--text3)',marginTop:1}},c.d)
-          );
-        })
-      ),
-      h('div',{style:{display:'flex',gap:10,flexWrap:'wrap'}},
-        h('button',{className:'btn btn-green btn-sm',onClick:downloadTemplate},'Download Blank Template'),
-        h('button',{className:'btn btn-gold btn-sm',onClick:downloadExample},'Download Example (3 items)')
-      )
-    ),
-
-    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:4}},' Upload Images & Videos'),
-      h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:10}},'Select all files at once. Max 50MB per file on Supabase free tier.'),
-      h('div',{style:dropStyle,
-        onClick:function(){if(fileRef.current)fileRef.current.click();},
-        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
-        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
-        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';handleMediaFiles(e.dataTransfer.files);}
-      },
-        h('div',{style:{fontSize:28,marginBottom:4}},'Files'),
-        h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
-          mediaCount>0?mediaCount+' file'+(mediaCount!==1?'s':'')+' selected':'Click or drag files here'
-        ),
-        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'Images: .jpg .png .webp  Videos: .mp4 .mov')
-      ),
-      h('input',{ref:fileRef,type:'file',accept:'image/*,video/mp4,video/quicktime',multiple:true,
-        style:{display:'none'},
-        onChange:function(e){handleMediaFiles(e.target.files);}}),
-      mediaCount>0&&h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}},
-        Object.keys(mediaFiles).map(function(name){
-          return h('div',{key:name,style:{
-            background:'white',
-            border:'1px solid '+(uploadedMedia[name]?'var(--green2)':'rgba(201,168,76,.3)'),
-            borderRadius:8,padding:'3px 10px',fontSize:11,color:'var(--text2)',display:'flex',alignItems:'center',gap:5
-          }},
-            mediaFiles[name].type.startsWith('image/')?'IMG':'VID',
-            ' ',name,
-            uploadedMedia[name]?' OK':''
-          );
-        })
-      ),
-      mediaStatus&&h('div',{style:{marginTop:8}},
-        h(ProgBar,{pct:mediaProgress}),
-        h('div',{style:{fontSize:12,color:'var(--text2)'}},mediaStatus)
-      ),
-      mediaCount>0&&h('button',{
-        className:'btn btn-green btn-sm',
-        style:{marginTop:12,opacity:uploadingMedia?0.6:1},
-        onClick:uploadAllMedia,
-        disabled:uploadingMedia||!connected
-      },uploadingMedia?'Uploading...':'Upload '+mediaCount+' File'+(mediaCount!==1?'s':'')+' to Supabase')
-    ),
-
-    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Upload Menu CSV'),
-      h('div',{style:dropStyle,
-        onClick:function(){if(csvRef.current)csvRef.current.click();},
-        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
-        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
-        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';if(e.dataTransfer.files[0])handleCSV(e.dataTransfer.files[0]);}
-      },
-        h('div',{style:{fontSize:28,marginBottom:4}},parsedRows.length>0?'OK':'CSV'),
-        h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
-          parsedRows.length>0?parsedRows.length+' items parsed and ready':'Click to select your CSV file'
-        ),
-        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'menu.csv')
-      ),
-      h('input',{ref:csvRef,type:'file',accept:'.csv,text/csv',style:{display:'none'},
-        onChange:function(e){if(e.target.files[0])handleCSV(e.target.files[0]);}})
-    ),
-
-    parsedRows.length>0&&h('div',{className:'glass',style:{padding:16}},
-      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)'}},' Preview & Import'),
-        h('div',{style:{display:'flex',gap:8}},
-          h('button',{
-            className:'btn btn-green btn-sm',
-            onClick:importAll,
-            disabled:importing||!connected,
-            style:{opacity:importing||!connected?0.6:1}
-          },importing?'Importing...':'Import All ('+parsedRows.length+' items)'),
-          h('button',{
-            className:'btn btn-gold btn-sm',
-            onClick:function(){setParsedRows([]);setRowStatuses({});setImportProgress(0);setImportStatus('');}
-          },'Clear')
-        )
-      ),
-      importStatus&&h('div',{style:{marginBottom:12}},
-        h(ProgBar,{pct:importProgress}),
-        h('div',{style:{fontSize:12,color:'var(--text2)'}},importStatus)
-      ),
-      h('div',{style:{overflowX:'auto'}},
-        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
-          h('thead',null,
-            h('tr',null,
-              ['Name','Price','Category','Image','Video','Triggers','Status'].map(function(col){
-                return h('th',{key:col,style:{background:'var(--green)',color:'white',padding:'8px 10px',textAlign:'left',fontSize:11}},col);
-              })
-            )
-          ),
-          h('tbody',null,
-            parsedRows.map(function(row,i){
-              const imgFile=row.image_filename||'';
-              const vidFile=row.video_filename||'';
-              const trigKw=row.trigger_keywords||'';
-              const n=trigKw?trigKw.split(',').filter(function(t){return t.trim();}).length:0;
-              const td={padding:'7px 10px',borderBottom:'1px solid rgba(201,168,76,.15)',verticalAlign:'middle'};
-              return h('tr',{key:i},
-                h('td',{style:td},h('strong',null,row.name)),
-                h('td',{style:td},'$'+(row.price||'0')),
-                h('td',{style:td},row.category||'Mains'),
-                h('td',{style:td},imgFile||'—'),
-                h('td',{style:td},vidFile||'—'),
-                h('td',{style:td},n?n+' triggers':'—'),
-                h('td',{style:td},h(SPill,{s:rowStatuses[i]}))
-              );
-            })
-          )
-        )
-      )
-    )
+    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
   );
 }
 
