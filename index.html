@@ -1099,13 +1099,11 @@ function matchMessage(question, messages) {
 
 // Phrases that signal a browsing/category/ingredient question — block triggers
 const TRIGGER_NOISE_GUARDS = [
-  'anything with','dishes with','items with','do you have anything',
-  'what has','what contains','what can i','what do you have','what have you got',
+  'anything with','dishes with','items with','do you have anything with',
+  'what has','what contains',
   'show me all','show me the menu','full menu','whole menu','all items',
-  'what are your','what kind of','what types of','do you have any',
-  'allergic','allergy','vegan','vegetarian','gluten','dairy free',
-  'can i see your','tell me about your','how much is',"what's on",
-  'what is on the menu','anything else','got any',
+  'what are your','what kind of','what types of',
+  'what is on the menu','what do you have on','everything on the menu',
 ];
 
 // Word-boundary match: single-word phrases require real boundaries so
