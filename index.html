@@ -1286,6 +1286,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
   }
 
   const items = menu.filter(function(i){ return i.visible; });
+  const menuList = items.map(function(i, n){ return (n+1) + '. ' + i.name; }).join('\n');
 
   // -- Step 0: Order intent → skip message matching, go straight to menu --
   // This MUST run before matchMessage so "add X to my order" never triggers welcome
@@ -1294,7 +1295,6 @@ async function askAI(question, menu, messages, tableNum, faq) {
     const quickMatch = matchMenuItem(question, menu);
     console.log('[AI] Order local fuzzy match:', quickMatch ? quickMatch.name : 'none');
 
-    const menuList = items.map(function(i, n){ return (n+1) + '. ' + i.name; }).join('\n');
     const orderPrompt = [
        'You are Anna, a friendly restaurant host at Stella\'s.',
       'A guest said: "' + question + '"',
@@ -2087,18 +2087,32 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
 
     console.log('[Video] Loading new video:', playUrl.split('/').pop());
     v.pause();
-    v.src = playUrl;
-    v.loop = effectiveLoop;
-    v.volume = getSavedVolume();
-    v.muted = true;
-    v.load();
-    const p = v.play();
-    if(p && p.then) p.then(()=>{
-      if(myPlayId.current !== id){ v.pause(); return; }
-      tryUnlock(v);
-      console.log('[Video] Playing:', playUrl.split('/').pop());
-    }).catch(e=>{
-      if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
+    v.removeAttribute('src');
+    v.load(); // flush old source
+
+    // Wait one frame for browser to release old source, then load new
+    requestAnimationFrame(()=>{
+      if(myPlayId.current !== id) return; // superseded
+      v.src = playUrl;
+      v.loop = effectiveLoop;
+      v.volume = getSavedVolume();
+      v.muted = true;
+
+      // Wait for video data to be ready before playing
+      function onReady(){
+        v.removeEventListener('canplay', onReady);
+        if(myPlayId.current !== id){ v.pause(); return; }
+        const p = v.play();
+        if(p && p.then) p.then(()=>{
+          if(myPlayId.current !== id){ v.pause(); return; }
+          tryUnlock(v);
+          console.log('[Video] Playing:', playUrl.split('/').pop());
+        }).catch(e=>{
+          if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
+        });
+      }
+      v.addEventListener('canplay', onReady, {once:true});
+      v.load();
     });
   },[playUrl]);
 
