@@ -664,26 +664,9 @@ async function loadFAQData(){
 // ==========================================
 // DEFAULT DATA
 // ==========================================
-const DEFAULT_MENU=[
-  {id:1,name:'Sticky Toffee Pudding',price:14,cat:'Desserts',desc:'A warm toffee pudding topped with candied pecans, buttery caramel sauce, whisky crème anglaise, and French vanilla ice cream.',ing:'dates, brown sugar, butter, eggs, flour, pecans, caramel, whisky, cream, vanilla ice cream',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1551024601-bec78aea704b?w=400&q=80',visible:true},
-  {id:2,name:'Spinach & Artichoke Dip',price:17,cat:'Starters',desc:'Creamy blend of spinach, artichoke hearts, parmesan and cream cheese. Served hot with warm tortilla chips.',ing:'spinach, artichoke, parmesan, cream cheese, garlic, chips',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1576021182211-9ea8dced3690?w=400&q=80',visible:true},
-  {id:3,name:'Lemon Basil Salmon',price:32,cat:'Mains',desc:'Atlantic salmon fillet with lemon-basil butter, roasted asparagus, and saffron risotto.',ing:'salmon, lemon, basil, butter, asparagus, arborio rice, saffron, parmesan',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=400&q=80',visible:true},
-  {id:4,name:'Chicken Madeira Rigatoni',price:26,cat:'Mains',desc:'Grilled chicken breast, rigatoni, mushrooms in a rich Madeira wine cream sauce, finished with aged parmesan.',ing:'chicken, rigatoni, mushrooms, Madeira wine, cream, parmesan, shallots',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1621996346565-e3dbc646d9a9?w=400&q=80',visible:true},
-  {id:5,name:'Sangria',price:12,cat:'Drinks',desc:'House red wine sangria with fresh citrus, seasonal fruit, and a hint of brandy. Served over ice.',ing:'red wine, brandy, orange juice, fresh fruit, cinnamon',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=400&q=80',visible:true},
-  {id:6,name:'Truffle Mushroom Flatbread',price:19,cat:'Starters',desc:'Wood-fired flatbread with truffle oil, wild mushrooms, caramelized onions, fontina cheese, and fresh thyme.',ing:'flatbread, truffle oil, cremini mushrooms, onions, fontina, thyme',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400&q=80',visible:true},
-  {id:7,name:'Classic Caesar Salad',price:16,cat:'Salads',desc:'Crisp romaine hearts, house-made Caesar dressing, shaved parmesan, house croutons.',ing:'romaine, parmesan, croutons, Caesar dressing, lemon',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1512852939750-1305098529bf?w=400&q=80',visible:true},
-  {id:8,name:'New York Cheesecake',price:12,cat:'Desserts',desc:'Dense, creamy New York-style cheesecake on a graham cracker crust with berry compote.',ing:'cream cheese, eggs, sugar, graham cracker, butter, mixed berries',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?w=400&q=80',visible:true},
-  {id:9,name:'Espresso Martini',price:15,cat:'Drinks',desc:'Fresh-pulled espresso, premium vodka, Kahlúa, and simple syrup. Shaken cold, served up.',ing:'espresso, vodka, Kahlua, simple syrup, coffee beans',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&q=80',visible:true},
-  {id:10,name:'Prime Ribeye 10oz',price:52,cat:'Mains',desc:'USDA Prime 10oz ribeye, aged 28 days, served with truffle fries, compound butter, and red wine jus.',ing:'prime ribeye, truffle, fries, compound butter, red wine, thyme, garlic',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',visible:true},
-];
+const DEFAULT_MENU=[];
 
-const DEFAULT_MESSAGES=[
-  {id:1,type:'welcome',title:"Welcome to Stella's!",body:"Hi! I'm Anna, your AI host. I'm here to help you explore today's menu, answer questions about ingredients, and make your experience amazing. What can I get for you?",imgUrl:'',active:true},
-  {id:2,type:'goodbye',title:'Thanks for visiting!',body:"It was wonderful having you! We hope to see you again soon. Don't forget to check out our weekly specials -- Anna will always be here to help!",imgUrl:'',active:true},
-  {id:3,type:'promo',title:'Happy Hour Special 🍹',body:'Enjoy 50% off all cocktails & appetizers every weekday from 3-6pm!',imgUrl:'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&q=80',active:true,slot:'feature1',scheduleStart:'',scheduleEnd:''},
-  {id:4,type:'promo',title:"Chef's Weekly Special ⭐",body:'This week only: Braised Short Rib with truffle mash and charred broccolini. Ask Anna for details!',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',active:true,slot:'feature2',scheduleStart:'',scheduleEnd:''},
-  {id:5,type:'promo',title:'New Summer Menu 🌿',body:'Fresh seasonal ingredients, new cocktails, and lighter fare for the warm months. Explore our summer picks below!',imgUrl:'https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=400&q=80',active:true,slot:'feature3',scheduleStart:'',scheduleEnd:''},
-];
+const DEFAULT_MESSAGES=[];
 
 // ==========================================
 // ICONS
@@ -1106,13 +1089,19 @@ function matchCarouselTrigger(question, menu) {
     var q = question.toLowerCase().trim().replace(/[?!.,;:]/g,'');
     var best = null;
     var bestLen = 0;
+    var bestPhrase = '';
     for (var i = 0; i < triggers.length; i++) {
       var t = triggers[i];
-      var phrase = (t.phrase || '').toLowerCase().trim().replace(/[?!.,;:]/g,'');
-      if (!phrase || phrase.length <= bestLen) continue;
-      if (q.indexOf(phrase) !== -1) {
-        best = t;
-        bestLen = phrase.length;
+      // Support both new `phrases` (comma-separated) and old `phrase` (single string)
+      var allPhrases = (t.phrases || t.phrase || '').split(',').map(function(p){return p.trim().toLowerCase().replace(/[?!.,;:]/g,'');}).filter(Boolean);
+      for (var pi = 0; pi < allPhrases.length; pi++) {
+        var ph = allPhrases[pi];
+        if (ph.length <= bestLen) continue;
+        if (q.indexOf(ph) !== -1) {
+          best = t;
+          bestLen = ph.length;
+          bestPhrase = ph;
+        }
       }
     }
     if (!best) return null;
@@ -1124,8 +1113,18 @@ function matchCarouselTrigger(question, menu) {
       items = triggerIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
     }
     if (!items.length) return null;
-    console.log('[Carousel] Trigger matched:', best.phrase, '|', items.length, 'items');
-    return { items: items, label: best.phrase, response: "Here's what we have!" };
+    var trigVideoUrl = best.videoUrl || '';
+    if (!trigVideoUrl && best.videoFilename) {
+      var sbUrl = (localStorage.getItem('stellas_sb_url')||'').replace(/\/$/,'');
+      var sbBucket = localStorage.getItem('stellas_sb_bucket')||'videos';
+      var r2Base = (localStorage.getItem('stellas_r2_base')||'').replace(/\/$/,'');
+      if (sbUrl) trigVideoUrl = sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+best.videoFilename;
+      else if (r2Base) trigVideoUrl = r2Base+'/'+best.videoFilename;
+    }
+    // Use the trigger's label if set, otherwise the matched phrase
+    var label = best.label || bestPhrase;
+    console.log('[Carousel] Trigger matched:', bestPhrase, '|', items.length, 'items', '| video:', trigVideoUrl||'none');
+    return { items: items, label: label, response: "Here's what we have!", videoUrl: trigVideoUrl, imgUrl: best.imgUrl||'' };
   } catch(e) {
     console.warn('[Carousel] Trigger check failed:', e);
     return null;
@@ -2091,22 +2090,20 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
     v.loop = effectiveLoop;
     v.volume = getSavedVolume();
     v.muted = true;
-
-    // Wait for video data to be ready before playing
-    function onReady(){
-      v.removeEventListener('canplay', onReady);
+    // play() returns a promise that waits for buffering internally -- no need for canplay
+    const p = v.play();
+    if(p && p.then) p.then(()=>{
       if(myPlayId.current !== id){ v.pause(); return; }
-      const p = v.play();
-      if(p && p.then) p.then(()=>{
-        if(myPlayId.current !== id){ v.pause(); return; }
-        tryUnlock(v);
-        console.log('[Video] Playing:', playUrl.split('/').pop());
-      }).catch(e=>{
-        if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
-      });
-    }
-    v.addEventListener('canplay', onReady, {once:true});
-    v.load();
+      tryUnlock(v);
+      console.log('[Video] Playing:', playUrl.split('/').pop());
+    }).catch(e=>{
+      // NotAllowedError on iOS means user hasn't tapped yet -- not a real error
+      if(e.name === 'NotAllowedError'){
+        console.log('[Video] Autoplay blocked -- will unmute on tap');
+      } else if(myPlayId.current === id){
+        console.warn('[Video] Playback error:', e.message);
+      }
+    });
   },[playUrl]);
 
   // Sync muted to DOM
@@ -2185,8 +2182,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
     // The <video> element stays in this JSX subtree -- never moved/reparented
     h('video',{
       ref:videoRef,
-      src:playUrl,
-      autoPlay:true,playsInline:true,muted:true,loop:effectiveLoop,
+      playsInline:true,muted:true,
       'webkit-playsinline':'','x-webkit-airplay':'deny',
       disablePictureInPicture:true,disableRemotePlayback:true,
       style:{width:'100%',height:'100%',display:'block',objectFit:'cover',objectPosition:'top center',
@@ -2553,14 +2549,18 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
     useHeygen
       ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
       : h(AvatarDisplay,{
-          videoUrl: hasCarousel ? (welcomeVideoUrl||'') : (videoUrl||''),
-          posterUrl:idleImg,
+          videoUrl: hasCarousel
+            ? (videoUrl || welcomeVideoUrl || '')   // carousel trigger video > welcome video
+            : (videoUrl||''),
+          posterUrl: hasCarousel
+            ? (item && item._carouselImg ? item.imgUrl : (welcomeImgSrc || idleImg))
+            : idleImg,
           fallbackVideoUrl: hasCarousel ? '' : fallback,
-          staticImgSrc: (!videoUrl && !fallback && hasItem && item.imgUrl)
-            ? item.imgUrl
-            : (welcomeImgSrc || idleImg),
+          staticImgSrc: hasCarousel
+            ? (item && item._carouselImg ? item.imgUrl : (welcomeImgSrc || ''))
+            : ((!videoUrl && !fallback && hasItem && item.imgUrl) ? item.imgUrl : (welcomeImgSrc || idleImg)),
           height:'62vh',
-          active: hasCarousel ? false : (hasItem && hasVideo),
+          active: hasCarousel ? !!(videoUrl) : (hasItem && hasVideo),
           loop: hasCarousel ? true : false,
           idleAfter:ordered,
           hideNameTag:hasCarousel,
@@ -2814,7 +2814,7 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,ta
         console.log("[Carousel] Text trigger matched:", carouselTextHit.label);
         setLoading(false);
         onClose();
-        if(onCarousel) onCarousel(carouselTextHit.items, carouselTextHit.label, carouselTextHit.response);
+        if(onCarousel) onCarousel(carouselTextHit.items, carouselTextHit.label, carouselTextHit.response, carouselTextHit.videoUrl||'', carouselTextHit.imgUrl||'');
         return;
       }
 
@@ -4857,8 +4857,12 @@ function AdminCarousel({menu, showToast}){
 
   const load = () => { try{ return {...DEF,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }catch(e){ return DEF; } };
   const [cfg, setCfg] = useState(load);
-  const [newPhrase, setNewPhrase] = useState('');
+  const [newPhrases, setNewPhrases] = useState('');
+  const [newLabel, setNewLabel] = useState('');
   const [newPhraseItems, setNewPhraseItems] = useState([]);
+  const [newVideoUrl, setNewVideoUrl] = useState('');
+  const [newVideoFilename, setNewVideoFilename] = useState('');
+  const [newImgUrl, setNewImgUrl] = useState('');
   const [section, setSection] = useState('triggers');
 
   function save(nextCfg){
@@ -4872,11 +4876,11 @@ function AdminCarousel({menu, showToast}){
   const visibleItems = menu.filter(i => i.visible);
 
   function addTrigger(){
-    if(!newPhrase.trim()){ showToast('Enter a trigger phrase first'); return; }
+    if(!newPhrases.trim()){ showToast('Enter at least one trigger phrase'); return; }
     if(!newPhraseItems.length){ showToast('Select at least one item'); return; }
-    const t = {phrase: newPhrase.trim().toLowerCase(), itemIds: newPhraseItems};
+    const t = {phrases: newPhrases.trim().toLowerCase(), label: newLabel.trim()||'', itemIds: newPhraseItems, videoUrl:newVideoUrl, videoFilename:newVideoFilename, imgUrl:newImgUrl};
     const next = {...cfg, triggers:[...cfg.triggers, t]};
-    save(next); setNewPhrase(''); setNewPhraseItems([]);
+    save(next); setNewPhrases(''); setNewLabel(''); setNewPhraseItems([]); setNewVideoUrl(''); setNewVideoFilename(''); setNewImgUrl('');
   }
   function deleteTrigger(i){
     const next = {...cfg, triggers: cfg.triggers.filter((_,idx)=>idx!==i)};
@@ -4940,14 +4944,23 @@ function AdminCarousel({menu, showToast}){
 
       cfg.triggers.map((t,i) => {
         const items = t.itemIds.map(id => visibleItems.find(it=>it.id===id)).filter(Boolean);
+        const hasVid = !!(t.videoUrl||t.videoFilename);
+        const hasImg = !!t.imgUrl;
         return h('div',{key:i,className:'glass',style:{padding:14,marginBottom:10}},
           h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},
             h('div',null,
-              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},'"'+t.phrase+'"'),
-              h('div',{style:{fontSize:11,color:'var(--text3)'}},items.length+' item'+(items.length!==1?'s':''))
+              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},
+                (t.label ? t.label+': ' : '')+'"'+(t.phrases||t.phrase||'')+'"'
+              ),
+              h('div',{style:{fontSize:11,color:'var(--text3)',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+                items.length+' item'+(items.length!==1?'s':''),
+                hasVid&&h('span',{style:{background:'rgba(42,90,64,.15)',padding:'1px 6px',borderRadius:8,fontSize:10,color:'var(--green2)',fontWeight:700}},'\uD83C\uDFA5 Video'),
+                hasImg&&h('span',{style:{background:'rgba(201,168,76,.15)',padding:'1px 6px',borderRadius:8,fontSize:10,color:'var(--gold3)',fontWeight:700}},'\uD83D\uDDBC Image')
+              )
             ),
             h('button',{onClick:()=>deleteTrigger(i),style:{background:'rgba(220,60,60,.08)',border:'1px solid rgba(220,60,60,.25)',borderRadius:8,padding:'5px 10px',fontSize:12,fontWeight:700,cursor:'pointer',color:'var(--red)',fontFamily:"'Lato',sans-serif"}},'Delete')
           ),
+          hasImg&&h('img',{src:t.imgUrl,style:{width:'100%',height:60,objectFit:'cover',borderRadius:8,marginBottom:6}}),
           h('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
             items.map(it=>h('div',{key:it.id,style:{
               display:'flex',alignItems:'center',gap:6,padding:'4px 10px',
@@ -4964,14 +4977,24 @@ function AdminCarousel({menu, showToast}){
         h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'+ Add Trigger'),
 
         h('div',{className:'form-group'},
-          h('label',{className:'label'},'Trigger phrase'),
+          h('label',{className:'label'},'Trigger phrases (comma-separated)'),
           h('input',{
-            value:newPhrase,
-            onChange:e=>setNewPhrase(e.target.value),
-            placeholder:'e.g. show me drinks, what\'s good tonight',
+            value:newPhrases,
+            onChange:e=>setNewPhrases(e.target.value),
+            placeholder:'e.g. what drinks do you have, show me drinks, any drinks',
             className:'field'
           }),
-          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'When someone says this, the carousel shows the items you pick below.')
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'Add multiple phrases separated by commas. Any match triggers this carousel.')
+        ),
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Display label (optional)'),
+          h('input',{
+            value:newLabel,
+            onChange:e=>setNewLabel(e.target.value),
+            placeholder:'e.g. Drinks, Desserts, Burgers',
+            className:'field'
+          }),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'Title shown above the carousel cards. Defaults to the matched phrase if empty.')
         ),
 
         h('div',{className:'form-group'},
@@ -5005,6 +5028,36 @@ function AdminCarousel({menu, showToast}){
               );
             })
           )
+        ),
+
+        // -- Video upload for this trigger --
+        h(VideoField,{
+          videoUrl:newVideoUrl,
+          videoFilename:newVideoFilename,
+          onUrlChange:v=>setNewVideoUrl(v),
+          onFilenameChange:v=>setNewVideoFilename(v),
+        }),
+
+        // -- Image upload for this trigger --
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Background Image (optional)'),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:6}},'Shown behind the carousel if no video is set. Uses idle breathing effect.'),
+          h('div',{className:'file-drop',onClick:()=>document.getElementById('img-upload-carousel').click()},
+            newImgUrl
+              ? h('div',{style:{display:'flex',alignItems:'center',gap:8,justifyContent:'center'}},
+                  h('img',{src:newImgUrl,style:{width:40,height:40,borderRadius:6,objectFit:'cover'}}),
+                  h('span',{style:{fontSize:13,color:'var(--green2)',fontWeight:700}},'\u2713 Image loaded'),
+                  h('button',{onClick:e=>{e.stopPropagation();setNewImgUrl('');},style:{background:'transparent',border:'none',color:'var(--red)',cursor:'pointer',fontSize:18}},'\u00D7')
+                )
+              : h('div',{style:{display:'flex',alignItems:'center',gap:8,justifyContent:'center',color:'var(--text3)'}},
+                  h('div',{style:{width:20,height:20}},I.image),
+                  h('span',{style:{fontSize:13}},'Upload image from phone')
+                )
+          ),
+          h('input',{id:'img-upload-carousel',type:'file',accept:'image/*',style:{display:'none'},onChange:async e=>{
+            const fl=e.target.files[0];if(!fl)return;
+            const d=await readFileAsDataURL(fl);setNewImgUrl(d);
+          }})
         ),
 
         h('button',{
@@ -5296,13 +5349,13 @@ function App(){
     // -- Priority -1: Check carousel triggers (Admin > Carousel tab) first --
     const carouselVoiceHit = matchCarouselTrigger(text, menu);
     if(carouselVoiceHit){
-      console.log("[Carousel] Voice trigger matched:", carouselVoiceHit.label);
+      console.log("[Carousel] Voice trigger matched:", carouselVoiceHit.label, '| video:', carouselVoiceHit.videoUrl||'none');
       setThinking(false);
       setCarouselItems(carouselVoiceHit.items);
       setCarouselLabel(carouselVoiceHit.label);
       setAiResponse(carouselVoiceHit.response);
-      setSelectedItem(null);
-      setVideoUrl("");
+      setSelectedItem(carouselVoiceHit.imgUrl ? {imgUrl:carouselVoiceHit.imgUrl, _carouselImg:true} : null);
+      setVideoUrl(carouselVoiceHit.videoUrl||"");
       setOrdered(false);
       setHeygenFallback(false);
       setScreen("response");
@@ -5836,7 +5889,7 @@ function App(){
       ].map(item=>h('button',{key:item.id,className:`nav-btn ${navTab===item.id?'active':''}`,onClick:()=>handleNav(item.id)},h('div',{style:{width:22,height:22}},item.icon),h('span',null,item.label)))
     ),
     
-    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,onCarousel:(items,label,resp)=>{setCarouselItems(items);setCarouselLabel(label||'');setAiResponse(resp||"Here's what we have!");setSelectedItem(null);setVideoUrl('');setOrdered(false);setHeygenFallback(false);setScreen('response');setNavTab('home');},tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
+    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,onCarousel:(items,label,resp,vid,img)=>{setCarouselItems(items);setCarouselLabel(label||'');setAiResponse(resp||"Here's what we have!");setSelectedItem(img?{imgUrl:img,_carouselImg:true}:null);setVideoUrl(vid||'');setOrdered(false);setHeygenFallback(false);setScreen('response');setNavTab('home');},tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
   );
 }
 
