@@ -1231,12 +1231,18 @@ function matchMenuItemTrigger(question, item) {
   return bestMatch;
 }
 // Resolve which video to play for a matched trigger.
-// Uses trigger's override videoFilename if set, else item's default video.
+// Prefers item's known-good videoFilename (set during upload) over trigger's
+// override (which may have the original unsanitized name that doesn't match storage).
 function resolveTriggerVideo(trigger) {
   if (!trigger) return '';
   const { item, videoFilename } = trigger;
+  // If the item has its own videoFilename, always prefer it — it was set by the
+  // upload code and matches what's actually in Supabase Storage.
+  if (item && (item.videoFilename || item.videoUrl)) {
+    return resolveVideoUrl(item);
+  }
+  // Only use trigger's override if the item itself has no video
   if (videoFilename) {
-    // Build URL from override filename using Supabase/R2
     const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
     const sbBucket = store.get('stellas_sb_bucket','videos');
     if (sbUrl) return sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+videoFilename;
