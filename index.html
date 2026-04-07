@@ -1356,9 +1356,60 @@ async function askAI(question, menu, messages, tableNum, faq) {
         });
         if (catItems.length>0) {
           console.log('[AI] Instant category:',cat.label,'->',catItems.length,'items');
-          return {response:"Here's what we have for "+cat.label.toLowerCase()+"!",item:null,videoUrl:'',ingredientMatches:catItems,searchTerm:cat.label};
+          const _reply = "Here's what we have for "+cat.label.toLowerCase()+"!";
+          return {response:_reply,item:null,videoUrl:'',ingredientMatches:catItems,searchTerm:cat.label};
         }
       }
+    }
+  }
+
+  // -- Step 0.5: Hardwired phrase → instant carousel, no AI call --
+  const _q = question.toLowerCase().trim();
+  const _HARDWIRED = [
+    {phrase:'show me the menu',    all:true},
+    {phrase:'what do you have',    all:true},
+    {phrase:'full menu',           all:true},
+    {phrase:'show me drinks',      words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
+    {phrase:'what drinks',         words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
+    {phrase:'any drinks',          words:['drink','cocktail','wine','beer','juice','soda','bar','mocktail']},
+    {phrase:'show me desserts',    words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
+    {phrase:'what desserts',       words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
+    {phrase:'any desserts',        words:['dessert','sweet','cake','pudding','tiramisu','chocolate']},
+    {phrase:'show me starters',    words:['starter','appetizer','share','app']},
+    {phrase:'what starters',       words:['starter','appetizer','share','app']},
+    {phrase:'show me burgers',     words:['burger','cheeseburger']},
+    {phrase:'what burgers',        words:['burger','cheeseburger']},
+    {phrase:'any burgers',         words:['burger','cheeseburger']},
+    {phrase:'what kind of burger', words:['burger','cheeseburger']},
+    {phrase:'show me chicken',     words:['chicken','wing']},
+    {phrase:'what chicken',        words:['chicken','wing']},
+    {phrase:'show me pasta',       words:['pasta','noodle','spaghetti']},
+    {phrase:'show me salads',      words:['salad']},
+    {phrase:'what salads',         words:['salad']},
+    {phrase:'show me pizza',       words:['pizza','flatbread']},
+    {phrase:'what pizza',          words:['pizza','flatbread']},
+    {phrase:'show me steaks',      words:['steak','beef']},
+    {phrase:'show me mains',       cat:'mains'},
+    {phrase:'what mains',          cat:'mains'},
+  ];
+  for (const rule of _HARDWIRED) {
+    if (!_q.includes(rule.phrase)) continue;
+    let hits;
+    if (rule.all) {
+      hits = menu.filter(i=>i.visible);
+    } else if (rule.cat) {
+      hits = menu.filter(i=>i.visible&&(i.cat||'').toLowerCase().includes(rule.cat));
+    } else {
+      hits = menu.filter(i=>{
+        if(!i.visible)return false;
+        const hay=((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')+' '+(i.triggerKeywords||'')).toLowerCase();
+        return rule.words.some(w=>hay.includes(w));
+      });
+    }
+    if(hits.length>0){
+      const label = rule.all?'Full Menu':rule.words?rule.words[0].charAt(0).toUpperCase()+rule.words[0].slice(1):rule.cat;
+      console.log('[AI] Hardwired:',rule.phrase,'->',hits.length,'items');
+      return{response:"Here's what we have for "+label.toLowerCase()+"!",item:null,videoUrl:'',ingredientMatches:hits,searchTerm:label};
     }
   }
 
@@ -2509,36 +2560,26 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
               console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
             } : null,
           }),
-      // -- Floating gold add button on avatar (only when item is showing) --
-      item&&!ordered&&h('button',{
-        onClick:()=>{ if(tableNum){onOrder(item);setOrdered(true);}else{onOrder(item);} },
+      // -- Floating gold add button — bottom-RIGHT corner (name tag is bottom-left) --
+      item&&h('button',{
+        onClick:()=>{ if(!ordered){ if(tableNum){onOrder(item);setOrdered(true);}else{onOrder(item);} } },
         style:{
           position:'absolute', bottom:14, right:14,
-          background:'linear-gradient(135deg,var(--gold2),var(--gold3))',
+          background: ordered
+            ? 'var(--green)'
+            : 'linear-gradient(135deg,var(--gold2),var(--gold3))',
           color:'white', border:'none', borderRadius:50,
           padding:'9px 16px', fontSize:13, fontWeight:700,
-          cursor:'pointer', boxShadow:'0 4px 16px rgba(44,24,16,0.35)',
+          cursor: ordered ? 'default' : 'pointer',
+          boxShadow:'0 4px 18px rgba(44,24,16,0.38)',
           display:'flex', alignItems:'center', gap:6,
           zIndex:10, whiteSpace:'nowrap',
           letterSpacing:'0.2px',
+          transition:'background .3s',
         }
       },
-        h('div',{style:{width:16,height:16}},I.check),
+        h('div',{style:{width:15,height:15,flexShrink:0}},I.check),
         ordered ? '✓ Added!' : (tableNum ? 'Add to Order' : 'Add to Cart')
-      ),
-      // -- Already ordered indicator --
-      item&&ordered&&h('div',{
-        style:{
-          position:'absolute', bottom:14, right:14,
-          background:'var(--green)', color:'white',
-          borderRadius:50, padding:'9px 16px',
-          fontSize:13, fontWeight:700,
-          boxShadow:'0 4px 16px rgba(26,58,42,0.4)',
-          display:'flex', alignItems:'center', gap:6,
-          zIndex:10,
-        }
-      },
-        h('div',{style:{width:16,height:16}},I.check), '✓ Added!'
       )
     ),
 
@@ -5094,9 +5135,25 @@ function App(){
       return;
     }
 
-      const{response,item,videoUrl:vid,noKey,orderIntent}=await askAI(text,menu,messages,tableNum,faq||[]);
+      const{response,item,videoUrl:vid,noKey,orderIntent,ingredientMatches:vCarousel,searchTerm:vTerm}=await askAI(text,menu,messages,tableNum,faq||[]);
       setThinking(false);
       if(noKey){showToast(response);setScreen('home');return;}
+
+      // Carousel — category/group query result
+      if(vCarousel&&vCarousel.length>0){
+        setCarouselItems(vCarousel);
+        setCarouselLabel(vTerm||'');
+        setAiResponse(response||"Here's what we have!");
+        setSelectedItem(null);
+        setVideoUrl('');
+        setOrdered(false);
+        setHeygenFallback(false);
+        setScreen('response');
+        speakReply(response);
+        return;
+      }
+      setCarouselItems([]);
+      setCarouselLabel('');
 
       // CRITICAL: always update activeItem from voice result so context phrases work
       if(item){ setActiveItem(item); console.log('[Voice] Current item on page:', item.name); }
