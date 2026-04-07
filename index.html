@@ -1135,13 +1135,14 @@ function matchCarouselTrigger(question, menu) {
     if (!cfg.enabled && cfg.enabled !== undefined) return null;
     var triggers = cfg.triggers || [];
     if (!triggers.length) return null;
-    var q = question.toLowerCase().trim();
+    // Strip punctuation so "what drinks do you have?" matches "what drinks do you have"
+    var q = question.toLowerCase().trim().replace(/[?!.,;:]/g,'');
     // Find longest matching phrase first
     var best = null;
     var bestLen = 0;
     for (var i = 0; i < triggers.length; i++) {
       var t = triggers[i];
-      var phrase = (t.phrase || '').toLowerCase().trim();
+      var phrase = (t.phrase || '').toLowerCase().trim().replace(/[?!.,;:]/g,'');
       if (!phrase || phrase.length <= bestLen) continue;
       if (q.indexOf(phrase) !== -1) {
         best = t;
@@ -1153,11 +1154,11 @@ function matchCarouselTrigger(question, menu) {
     var pinnedIds = cfg.pinnedIds || [];
     var triggerIds = best.itemIds || [];
     // Pinned items first, then trigger items, deduped
-    var allIds = pinnedIds.concat(triggerIds.filter(function(id){ return pinnedIds.indexOf(id) === -1; }));
-    var items = allIds.map(function(id){ return menu.find(function(m){ return m.id === id && m.visible; }); }).filter(Boolean);
+    var allIds = pinnedIds.concat(triggerIds.filter(function(id){ return pinnedIds.map(String).indexOf(String(id)) === -1; }));
+    var items = allIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
     if (!items.length) {
       // Fallback: return all items matching trigger item ids without pinned filter
-      items = triggerIds.map(function(id){ return menu.find(function(m){ return m.id === id && m.visible; }); }).filter(Boolean);
+      items = triggerIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
     }
     if (!items.length) return null;
     console.log('[Carousel] Trigger matched:', best.phrase, '|', items.length, 'items');
@@ -2637,13 +2638,13 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       useHeygen
         ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
         : h(AvatarDisplay,{
-            videoUrl:videoUrl||'',
+            videoUrl: hasCarousel ? (welcomeVideoUrl||'') : (videoUrl||''),
             posterUrl:idleImg,
-            fallbackVideoUrl:fallback,
-            staticImgSrc:idleImg,
+            fallbackVideoUrl: hasCarousel ? '' : fallback,
+            staticImgSrc:welcomeImgSrc||idleImg,
             height:'100%',
-            active:hasItem,
-            loop:false,
+            active: hasCarousel ? false : hasItem,
+            loop: hasCarousel ? true : false,
             idleAfter:ordered,
             hideNameTag:hasCarousel,
             onEnded: ordered ? ()=>{ console.log('[Order] Confirm video ended'); } : null,
@@ -5382,87 +5383,87 @@ function App(){
   // Voice -- robust, works from table URLs
   function startListening(){
     setTranscript('');setOrdered(false);
-    stopTTS(); // cancel any reading aloud before listening starts
+    stopTTS();
+
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     if(!SR){ setShowText(true); return; }
 
-    // Resume AudioContext synchronously inside this gesture handler (iOS requirement)
+    // Kill any previous recognition instance cleanly before creating a new one
+    // This is the fix for "mic unavailable after first use" on iOS Safari
+    if(recRef.current){
+      try{ recRef.current.onresult=null; recRef.current.onerror=null; recRef.current.onend=null; recRef.current.abort(); }catch(e){}
+      recRef.current=null;
+    }
+
     try{
       const AC=window.AudioContext||window.webkitAudioContext;
       if(AC){ const ac=new AC(); ac.resume().catch(()=>{}); }
     }catch(e){}
 
-    forceUnlock(); // also unmute any pending videos
-
+    forceUnlock();
     setScreen('listening');
     setThinking(false);
 
-    // Defer r.start() one microtask so React can flush the screen change first
-    // This prevents the iOS race where setScreen re-render cancels the mic grant
-    Promise.resolve().then(()=>{
-      try{
-        const r=new SR();
-        r.continuous=false;
-        r.interimResults=true;
-        r.lang='en-US';
-        recRef.current=r;
-        let handled=false;
+    // Small delay after killing old instance so iOS releases the mic hardware
+    setTimeout(()=>{
+      function attempt(retriesLeft){
+        try{
+          const r=new SR();
+          r.continuous=false;
+          r.interimResults=true;
+          r.lang='en-US';
+          recRef.current=r;
+          let handled=false;
 
-        r.onresult=e=>{
-          const t=Array.from(e.results).map(x=>x[0].transcript).join('');
-          setTranscript(t);
-          if(e.results[e.results.length-1].isFinal){
-            handled=true;
-            r.stop();
-            processVoiceText(t);
-          }
-        };
+          r.onresult=e=>{
+            const t=Array.from(e.results).map(x=>x[0].transcript).join('');
+            setTranscript(t);
+            if(e.results[e.results.length-1].isFinal){
+              handled=true;
+              try{r.stop();}catch(e){}
+              processVoiceText(t);
+            }
+          };
 
-        let _retries=0;
-        r.onerror=e=>{
-          console.warn('[Voice] Error:',e.error);
-          if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-            handled=true;
+          r.onerror=e=>{
+            console.warn('[Voice] Error:',e.error,'retriesLeft:',retriesLeft);
+            if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+              handled=true;
+              setScreen('home');
+              showToast('Mic permission needed — tap Allow when prompted');
+            } else if((e.error==='aborted'||e.error==='network')&&retriesLeft>0){
+              // Clean up and retry after a short pause
+              try{r.onresult=null;r.onerror=null;r.onend=null;}catch(x){}
+              setTimeout(()=>attempt(retriesLeft-1), 400);
+            } else if(e.error==='no-speech'){
+              handled=true;
+              setScreen('home');
+            } else {
+              handled=true;
+              setScreen('home');
+              showToast('Mic unavailable — use text chat instead');
+            }
+          };
+
+          r.onend=()=>{
+            if(handled)return;
             setScreen('home');
-            showToast('Mic permission needed -- tap Allow when prompted');
-          } else if(e.error==='aborted'&&_retries<2){
-            // iOS fires aborted immediately on first tap -- silent retry
-            _retries++;
-            console.log('[Voice] Aborted, retrying',_retries);
-            setTimeout(()=>{
-              try{
-                const r2=new SR();
-                r2.continuous=false;r2.interimResults=true;r2.lang='en-US';
-                recRef.current=r2;
-                r2.onresult=r.onresult;
-                r2.onerror=r.onerror;
-                r2.onend=r.onend;
-                r2.start();
-              }catch(e2){handled=true;setScreen('home');}
-            },350);
-          } else if(e.error==='no-speech'){
-            handled=true;
-            setScreen('home');
+          };
+
+          r.start();
+          console.log('[Voice] Listening started');
+        }catch(err){
+          console.error('[Voice] Failed to start:',err.message);
+          if(retriesLeft>0){
+            setTimeout(()=>attempt(retriesLeft-1), 500);
           } else {
-            handled=true;
             setScreen('home');
-            showToast('Mic unavailable — try again or use text chat');
+            showToast('Mic unavailable — use text chat instead');
           }
-        };
-
-        r.onend=()=>{
-          if(handled)return;
-          setScreen('home');
-        };
-
-        r.start();
-        console.log('[Voice] Listening started');
-      }catch(err){
-        console.error('[Voice] Failed to start:',err);
-        setScreen('home');
-        showToast('Microphone unavailable -- use the text chat button instead');
+        }
       }
-    });
+      attempt(2);
+    }, 120);
   }
 
   // Separated from startListening so it always has fresh state via closure
