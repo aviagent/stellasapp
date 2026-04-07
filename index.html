@@ -2087,33 +2087,26 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
 
     console.log('[Video] Loading new video:', playUrl.split('/').pop());
     v.pause();
-    v.removeAttribute('src');
-    v.load(); // flush old source
+    v.src = playUrl;
+    v.loop = effectiveLoop;
+    v.volume = getSavedVolume();
+    v.muted = true;
 
-    // Wait one frame for browser to release old source, then load new
-    requestAnimationFrame(()=>{
-      if(myPlayId.current !== id) return; // superseded
-      v.src = playUrl;
-      v.loop = effectiveLoop;
-      v.volume = getSavedVolume();
-      v.muted = true;
-
-      // Wait for video data to be ready before playing
-      function onReady(){
-        v.removeEventListener('canplay', onReady);
+    // Wait for video data to be ready before playing
+    function onReady(){
+      v.removeEventListener('canplay', onReady);
+      if(myPlayId.current !== id){ v.pause(); return; }
+      const p = v.play();
+      if(p && p.then) p.then(()=>{
         if(myPlayId.current !== id){ v.pause(); return; }
-        const p = v.play();
-        if(p && p.then) p.then(()=>{
-          if(myPlayId.current !== id){ v.pause(); return; }
-          tryUnlock(v);
-          console.log('[Video] Playing:', playUrl.split('/').pop());
-        }).catch(e=>{
-          if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
-        });
-      }
-      v.addEventListener('canplay', onReady, {once:true});
-      v.load();
-    });
+        tryUnlock(v);
+        console.log('[Video] Playing:', playUrl.split('/').pop());
+      }).catch(e=>{
+        if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
+      });
+    }
+    v.addEventListener('canplay', onReady, {once:true});
+    v.load();
   },[playUrl]);
 
   // Sync muted to DOM
