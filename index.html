@@ -576,29 +576,13 @@ function faqToSB(e){
 }
 
 // -- UNIFIED SAVE: writes to Supabase + IndexedDB cache ---------
-function sanitizeMenuForSave(menu){
-  return menu.map(item=>{
-    const clean={...item};
-    if(clean.videoUrl && clean.videoUrl.startsWith('data:')){
-      console.warn('[Save] Stripping data URL from video for item:', clean.name);
-      clean.videoUrl='';
-    }
-    return clean;
-  });
-}
 async function saveMenu(updatedMenu, showToastFn){
-  const cleanMenu=sanitizeMenuForSave(updatedMenu);
-  await idbSet('stellas_menu', cleanMenu);
+  await idbSet('stellas_menu', updatedMenu);
   const cfg=sbCfg();
   if(cfg){
-    try{
-      await Promise.all(cleanMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
-      console.log('[SB] Menu saved to Supabase:', cleanMenu.length, 'items');
-    }catch(e){
-      console.error('[SB] Menu save failed:',e);
-      if(showToastFn) showToastFn('⚠️ Saved locally but Supabase sync failed');
-      return;
-    }
+    // Upsert all items in parallel (fast)
+    await Promise.all(updatedMenu.map(item=>sbUpsert('menu_items', menuToSB(item))));
+    console.log('[SB] Menu saved to Supabase:', updatedMenu.length, 'items');
   }
   if(showToastFn) showToastFn('✓ Saved');
 }
@@ -1109,58 +1093,91 @@ function matchMessage(question, messages) {
 }
 
 // ==========================================
+// CAROUSEL TRIGGER CHECKER
+// Reads triggers saved in Admin > Carousel tab and matches against the question.
+// Returns {items, label, response} if matched, null otherwise.
+// ==========================================
+function matchCarouselTrigger(question, menu) {
+  try {
+    var cfg = JSON.parse(localStorage.getItem('stellas_carousel_cfg') || '{}');
+    if (!cfg.enabled && cfg.enabled !== undefined) return null;
+    var triggers = cfg.triggers || [];
+    if (!triggers.length) return null;
+    var q = question.toLowerCase().trim().replace(/[?!.,;:]/g,'');
+    var best = null;
+    var bestLen = 0;
+    for (var i = 0; i < triggers.length; i++) {
+      var t = triggers[i];
+      var phrase = (t.phrase || '').toLowerCase().trim().replace(/[?!.,;:]/g,'');
+      if (!phrase || phrase.length <= bestLen) continue;
+      if (q.indexOf(phrase) !== -1) {
+        best = t;
+        bestLen = phrase.length;
+      }
+    }
+    if (!best) return null;
+    var pinnedIds = cfg.pinnedIds || [];
+    var triggerIds = best.itemIds || [];
+    var allIds = pinnedIds.concat(triggerIds.filter(function(id){ return pinnedIds.map(String).indexOf(String(id)) === -1; }));
+    var items = allIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
+    if (!items.length) {
+      items = triggerIds.map(function(id){ return menu.find(function(m){ return String(m.id) === String(id) && m.visible; }); }).filter(Boolean);
+    }
+    if (!items.length) return null;
+    console.log('[Carousel] Trigger matched:', best.phrase, '|', items.length, 'items');
+    return { items: items, label: best.phrase, response: "Here's what we have!" };
+  } catch(e) {
+    console.warn('[Carousel] Trigger check failed:', e);
+    return null;
+  }
+}
+
+// ==========================================
 // GLOBAL MENU TRIGGER SCANNER
 // Scans ALL menu items' triggers against the question.
 // This fires even when no item is currently selected (e.g. from home screen).
-// First keyword match across any item wins.
+// Longest keyword match (by character length) wins.
 // ==========================================
 function matchAnyMenuTrigger(question, menu) {
   if (!menu || !menu.length) return null;
-  const q = question.toLowerCase().trim();
+  var q = question.toLowerCase().replace(/[?!.,;:]/g, '').trim();
 
-  let bestMatch = null;
-  let bestWordCount = 0;
+  var bestMatch = null;
+  var bestLen = 0;
 
-  for (const item of menu) {
+  for (var mi = 0; mi < menu.length; mi++) {
+    var item = menu[mi];
     if (!item.visible) continue;
 
-    const allTriggers = [];
-    // Split by both pipe and comma to support both formats
-    function splitKeywords(str){ return str.split(/[|,]/).map(function(p){return p.trim().toLowerCase();}).filter(Boolean); }
+    var allTriggers = [];
     if (item.triggers && item.triggers.length) {
-      for (const tr of item.triggers) {
+      for (var ti = 0; ti < item.triggers.length; ti++) {
+        var tr = item.triggers[ti];
         if (!tr.keywords) continue;
-        splitKeywords(tr.keywords).forEach(function(phrase){
-          // Sanitize videoFilename to match what Supabase Storage actually has
-          var vf = tr.videoFilename||'';
-          if(vf) vf = vf.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
-          allTriggers.push({phrase:phrase, type:tr.action||'item-request', videoFilename:vf});
+        tr.keywords.split(',').forEach(function(p){
+          var kw = p.trim().toLowerCase();
+          if (kw) allTriggers.push({phrase:kw, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
         });
       }
     }
     if (item.triggerKeywords) {
-      splitKeywords(item.triggerKeywords).forEach(function(phrase){
-        allTriggers.push({phrase:phrase, type:item.triggerType||'item-request', videoFilename:''});
+      item.triggerKeywords.split(',').forEach(function(p){
+        var kw = p.trim().toLowerCase();
+        if (kw) allTriggers.push({phrase:kw, type:item.triggerType||'item-request', videoFilename:''});
       });
     }
 
-    for (let ti=0; ti<allTriggers.length; ti++) {
-      const t = allTriggers[ti];
-      if (!t.phrase || !q.includes(t.phrase)) continue;
-      const wordCount = t.phrase.split(/\s+/).length;
-      console.log('[Trigger] Candidate:', t.phrase, '| words:', wordCount, '| item:', item.name);
-      if (wordCount > bestWordCount) {
-        bestWordCount = wordCount;
+    for (var ki = 0; ki < allTriggers.length; ki++) {
+      var t = allTriggers[ki];
+      if (!t.phrase || t.phrase.length <= bestLen) continue;
+      if (q.indexOf(t.phrase) !== -1) {
+        console.log('[Trigger] Match:', t.phrase, '->', item.name);
+        bestLen = t.phrase.length;
         bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
       }
     }
   }
 
-  if (bestMatch) {
-    console.log('[Trigger] Winner:', bestMatch.phrase, '| item:', bestMatch.item.name);
-  } else {
-    console.log('[Trigger] No match for:', q);
-  }
   return bestMatch;
 }
 function matchFAQ(question, faq) {
@@ -1195,19 +1212,15 @@ function matchMenuItemTrigger(question, item) {
   let bestMatch = null;
   let bestPhraseLen = 0;
 
-  // Split by both pipe and comma to support both formats
-  function splitKw(str){ return str.split(/[|,]/).map(p => p.trim().toLowerCase()).filter(Boolean); }
   const triggersArr = item.triggers && item.triggers.length ? item.triggers : null;
   if (triggersArr) {
     for (const tr of triggersArr) {
       if (!tr.keywords) continue;
-      const phrases = splitKw(tr.keywords);
+      const phrases = tr.keywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
       for (const phrase of phrases) {
         if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
           bestPhraseLen = phrase.length;
-          var vf = tr.videoFilename||'';
-          if(vf) vf = vf.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
-          bestMatch = { item, phrase, type: tr.action || 'item-request', videoFilename: vf };
+          bestMatch = { item, phrase, type: tr.action || 'item-request', videoFilename: tr.videoFilename || '' };
         }
       }
     }
@@ -1220,7 +1233,7 @@ function matchMenuItemTrigger(question, item) {
 
   // Legacy fallback: flat triggerKeywords / triggerType
   if (!item.triggerKeywords) return null;
-  const phrases = splitKw(item.triggerKeywords);
+  const phrases = item.triggerKeywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
   for (const phrase of phrases) {
     if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
       bestPhraseLen = phrase.length;
@@ -1231,18 +1244,12 @@ function matchMenuItemTrigger(question, item) {
   return bestMatch;
 }
 // Resolve which video to play for a matched trigger.
-// Prefers item's known-good videoFilename (set during upload) over trigger's
-// override (which may have the original unsanitized name that doesn't match storage).
+// Uses trigger's override videoFilename if set, else item's default video.
 function resolveTriggerVideo(trigger) {
   if (!trigger) return '';
   const { item, videoFilename } = trigger;
-  // If the item has its own videoFilename, always prefer it — it was set by the
-  // upload code and matches what's actually in Supabase Storage.
-  if (item && (item.videoFilename || item.videoUrl)) {
-    return resolveVideoUrl(item);
-  }
-  // Only use trigger's override if the item itself has no video
   if (videoFilename) {
+    // Build URL from override filename using Supabase/R2
     const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
     const sbBucket = store.get('stellas_sb_bucket','videos');
     if (sbUrl) return sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+videoFilename;
@@ -2047,7 +2054,7 @@ function getWelcomeVideo(messages){
 function getSavedVolume(){ try{ const v=parseFloat(localStorage.getItem('stellas_volume')); return(!isNaN(v)&&v>=0&&v<=1)?v:0.5; }catch(e){ return 0.5; } }
 function saveVolume(v){ try{ localStorage.setItem('stellas_volume',String(v)); }catch(e){} }
 
-function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false,onEnded,fallbackVideoUrl,staticImgSrc,idleAfter=false}){
+function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false,onEnded,fallbackVideoUrl,staticImgSrc,idleAfter=false,hideNameTag=false,carouselOverlay=null}){
   const videoRef = useRef();
   const myPlayId = useRef(0);
   const[ended,setEnded]=useState(false);
@@ -2078,27 +2085,20 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
     myPlayId.current = id;
     setEnded(false); setVideoErr(false); setMuted(true);
 
-    console.log('[Video] Old video paused/reset');
+    console.log('[Video] Loading new video:', playUrl.split('/').pop());
     v.pause();
-    v.currentTime = 0;
-    v.src = '';
+    v.src = playUrl;
+    v.loop = effectiveLoop;
+    v.volume = getSavedVolume();
+    v.muted = true;
     v.load();
-
-    // One rAF to let browser flush the reset before loading new src
-    requestAnimationFrame(()=>{
-      if(myPlayId.current !== id) return; // superseded
-      v.src = playUrl;
-      v.loop = effectiveLoop;
-      v.volume = getSavedVolume();
-      v.muted = true; // always start muted; tryUnlock will unmute
-      const p = v.play();
-      if(p && p.then) p.then(()=>{
-        if(myPlayId.current !== id){ v.pause(); return; }
-        tryUnlock(v);
-        console.log('[Video] New video loaded and played:', playUrl.split('/').pop());
-      }).catch(e=>{
-        if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
-      });
+    const p = v.play();
+    if(p && p.then) p.then(()=>{
+      if(myPlayId.current !== id){ v.pause(); return; }
+      tryUnlock(v);
+      console.log('[Video] Playing:', playUrl.split('/').pop());
+    }).catch(e=>{
+      if(myPlayId.current === id) console.warn('[Video] Playback error:', e.message);
     });
   },[playUrl]);
 
@@ -2127,7 +2127,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
                    .catch(e=>console.warn('[Video] Replay error:',e.message));
   }
 
-  const nameTag=h('div',{style:{position:'absolute',bottom:20,left:16,zIndex:2,pointerEvents:'none',background:'linear-gradient(135deg,var(--gold),var(--gold2))',color:'#1a1a0a',borderRadius:6,padding:'4px 10px',fontFamily:"'Playfair Display',serif",fontSize:11,fontWeight:700,boxShadow:'0 2px 8px rgba(0,0,0,.3)'}},
+  const nameTag=hideNameTag?null:h('div',{style:{position:'absolute',bottom:20,left:16,zIndex:2,pointerEvents:'none',background:'linear-gradient(135deg,var(--gold),var(--gold2))',color:'#1a1a0a',borderRadius:6,padding:'4px 10px',fontFamily:"'Playfair Display',serif",fontSize:11,fontWeight:700,boxShadow:'0 2px 8px rgba(0,0,0,.3)'}},
     h('div',{style:{fontSize:9,letterSpacing:2}},"STELLA'S"),h('div',{style:{fontSize:11}},'Anna'));
 
   const pillBtn={background:'rgba(0,0,0,.65)',border:'1.5px solid rgba(255,255,255,.25)',color:'white',borderRadius:50,padding:'0 14px',height:34,fontSize:13,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',backdropFilter:'blur(8px)',boxShadow:'0 2px 10px rgba(0,0,0,.35)',fontFamily:"'Lato',sans-serif"};
@@ -2152,7 +2152,8 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
         : h('div',{style:{width:'100%',height:'100%',background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
             h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')),
       active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
-      h('div',{className:'sparkle-overlay'}),nameTag
+      h('div',{className:'sparkle-overlay'}),nameTag,
+      carouselOverlay
     );
   }
 
@@ -2167,7 +2168,8 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
       sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
       h('div',{className:'sparkle-overlay'}),
       h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again'),
-      nameTag
+      nameTag,
+      carouselOverlay
     );
   }
 
@@ -2190,7 +2192,8 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
       h('img',{src:posterUrl||staticImgSrc,alt:'poster',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
     ),
     volControl,replayBtn,nameTag,
-    active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}}))
+    active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
+    carouselOverlay
   );
 }
 function AnnaPhoto({height='62vh',active=false,staticImgSrc=''}){
@@ -2480,32 +2483,85 @@ function ListeningScreen({transcript,onStop,thinking=false,staticImgSrc=''}){
 }
 
 // RESPONSE SCREEN
-function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback}){
+function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd}){
   const useHeygen = avatarMode === 'heygen' && !heygenFallback;
   const hasItem = !!item;
   const hasVideo = !!videoUrl;
-  const fallback = ordered ? '' : ((hasItem||hasVideo) ? (welcomeVideoUrl||'') : '');
-  // After order confirm: idle image = message's imgUrl (Anna confirm photo), fallback to item food photo
-  const idleImg = ordered ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '') : (item?.imgUrl || welcomeImgSrc || '');
+  const hasCarousel = !!(carouselItems&&carouselItems.length>0);
+  const fallback = ordered ? '' : (!hasItem && !hasVideo ? (welcomeVideoUrl||'') : '');
+  const idleImg = ordered
+    ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '')
+    : (item?.imgUrl || welcomeImgSrc || '');
+
+  // Build carousel overlay element -- rendered INSIDE AvatarDisplay so overflow:hidden doesn't clip it
+  const carouselEl = hasCarousel ? h('div',{style:{
+    position:'absolute',
+    bottom:0, left:0, right:0,
+    zIndex:20,
+    background:'linear-gradient(to top, rgba(10,22,14,0.97) 0%, rgba(10,22,14,0.82) 55%, transparent 100%)',
+    paddingTop:48,
+    paddingBottom:12,
+  }},
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px 8px'}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--gold2)',fontWeight:700,letterSpacing:'0.3px'}},
+        carouselLabel||'Menu'
+      ),
+      carouselItems.length>2&&h('span',{style:{fontSize:11,color:'rgba(255,255,255,0.45)',letterSpacing:1}},'swipe \u203A')
+    ),
+    h('div',{style:{
+      display:'flex', gap:10,
+      overflowX:'auto',
+      padding:'0 14px 4px',
+      WebkitOverflowScrolling:'touch',
+      scrollbarWidth:'none',
+      msOverflowStyle:'none',
+    }},
+      carouselItems.map((dish,di)=>h('div',{
+        key:dish.id||di,
+        style:{
+          flexShrink:0, width:108,
+          background:'rgba(255,255,255,0.97)',
+          border:'1.5px solid rgba(201,168,76,0.7)',
+          borderRadius:12,
+          overflow:'hidden',
+          boxShadow:'0 6px 20px rgba(0,0,0,0.5)',
+        }
+      },
+        dish.imgUrl
+          ? h('img',{src:dish.imgUrl,alt:dish.name,style:{width:'100%',height:68,objectFit:'cover',display:'block'}})
+          : h('div',{style:{width:'100%',height:68,background:'var(--cream2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}},'\uD83C\uDF7D\uFE0F'),
+        h('div',{style:{padding:'6px 7px 8px'}},
+          h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:10,fontWeight:700,color:'var(--text1)',lineHeight:1.3,marginBottom:2,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}},dish.name),
+          h('div',{style:{fontSize:10,color:'var(--gold3)',fontWeight:700,marginBottom:5}},'$'+dish.price),
+          h('button',{
+            onClick:()=>onCarouselAdd&&onCarouselAdd(dish),
+            style:{width:'100%',background:'var(--green)',color:'white',border:'none',borderRadius:6,padding:'5px 0',fontSize:10,fontWeight:700,cursor:'pointer',fontFamily:"'Lato',sans-serif"}
+          },'+ Add')
+        )
+      ))
+    )
+  ) : null;
 
   return h('div',{className:'main-scroll fade-in'},
     useHeygen
       ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
       : h(AvatarDisplay,{
-          videoUrl:videoUrl||'',
+          videoUrl: hasCarousel ? (welcomeVideoUrl||'') : (videoUrl||''),
           posterUrl:idleImg,
-          fallbackVideoUrl:fallback,
-          staticImgSrc:idleImg,
+          fallbackVideoUrl: hasCarousel ? '' : fallback,
+          staticImgSrc: (!videoUrl && !fallback && hasItem && item.imgUrl)
+            ? item.imgUrl
+            : (welcomeImgSrc || idleImg),
           height:'62vh',
-          active:hasItem,
-          loop:false,
+          active: hasCarousel ? false : (hasItem && hasVideo),
+          loop: hasCarousel ? true : false,
           idleAfter:ordered,
-          onEnded: ordered ? ()=>{
-            console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
-          } : null,
+          hideNameTag:hasCarousel,
+          carouselOverlay:carouselEl,
+          onEnded: ordered ? ()=>{ console.log('[Order] Confirm video ended'); } : null,
         }),
 
-    // -- Response bubble -- always present when we reach this screen --
+    // -- Response bubble --
     h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'bubble',style:{textAlign:'center'}},
         h('p',{style:{fontSize:14,color:'var(--text2)',lineHeight:1.65}},
@@ -2514,48 +2570,40 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       )
     ),
 
-    // -- Item card --
-    item&&h('div',{style:{padding:'10px 16px 0'}},
+    // -- Single item card (only when no carousel) --
+    item&&!hasCarousel&&h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'glass',style:{display:'flex',gap:12,padding:14}},
         item.imgUrl
           ? h('img',{src:item.imgUrl,alt:item.name,style:{width:84,height:84,borderRadius:12,objectFit:'cover',flexShrink:0,boxShadow:'0 3px 12px rgba(0,0,0,.15)'}})
-          : h('div',{style:{width:84,height:84,borderRadius:12,background:'var(--cream2)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:32}},'🍽️'),
+          : h('div',{style:{width:84,height:84,borderRadius:12,background:'var(--cream2)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:32}},'\uD83C\uDF7D\uFE0F'),
         h('div',{style:{flex:1}},
           h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:17,color:'var(--text1)',fontWeight:700}},`${item.name} - $${item.price}`),
-          h('div',{style:{fontSize:12,color:'var(--gold3)',marginTop:2,marginBottom:6}},'✦ '+item.cat),
+          h('div',{style:{fontSize:12,color:'var(--gold3)',marginTop:2,marginBottom:6}},'\u2726 '+item.cat),
           h('div',{style:{fontSize:13,color:'var(--text2)',lineHeight:1.5}},item.desc)
         )
       )
     ),
 
-    // -- Order button (table mode) --
-    item&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button table mode (no carousel) --
+    item&&!hasCarousel&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);setOrdered(true);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      },
-        h('div',{className:'btn-icon'},I.check),
-        ordered?'Ordered! ✓':'Order to Table'
-      ),
+      }, h('div',{className:'btn-icon'},I.check), ordered?'Ordered! \u2713':'Order to Table'),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
-      )
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
     ),
 
-    // -- Order button (takeout mode) --
-    item&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button takeout mode (no carousel) --
+    item&&!hasCarousel&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      },
-        h('div',{className:'btn-icon'},I.check),
-        ordered?'Added! ✓':'Add to Order'
-      ),
+      }, h('div',{className:'btn-icon'},I.check), ordered?'Added! \u2713':'Add to Order'),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
-      )
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
     ),
 
     // -- Talk / Text buttons --
@@ -2633,7 +2681,7 @@ function parseQty(text) {
 }
 
 // TEXT CHAT MODAL
-function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
+function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
   const[msgs,setMsgs]=useState([{role:'assistant',content:"Hi! I'm Anna \uD83D\uDC4B What can I help you with today?"}]);
   const[inp,setInp]=useState('');
   const[loading,setLoading]=useState(false);
@@ -2753,6 +2801,16 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOr
     setLoading(true);
     console.log('[TextChat] Question:',txt,'| Table mode:',tableNum||'none');
     try{
+      // -- Priority -1: Carousel triggers from Admin > Carousel tab --
+      const carouselTextHit = matchCarouselTrigger(txt, menu);
+      if(carouselTextHit){
+        console.log("[Carousel] Text trigger matched:", carouselTextHit.label);
+        setLoading(false);
+        onClose();
+        if(onCarousel) onCarousel(carouselTextHit.items, carouselTextHit.label, carouselTextHit.response);
+        return;
+      }
+
       // -- Priority 0: Menu item trigger keywords --
       // First scan ALL menu items (works from home screen, menu page, anywhere).
       // Then also check activeItem/selectedItem for context-specific triggers.
@@ -2837,17 +2895,22 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOr
       console.log('[TextChat] AI result -- item:',item?.name||'none','| video:',videoUrl||'none','| orderIntent:',orderIntent,'| ingredientMatches:',ingredientMatches?.length||0);
       if(noKey){setMsgs(p=>[...p,{role:'assistant',content:response}]);setLoading(false);return;}
 
-      // -- Ingredient search result → show compact dish list --
+      // -- Ingredient/category search result → close chat, show carousel on response screen --
       if(ingredientMatches&&ingredientMatches.length>0){
-        setMsgs(p=>[...p,{
-          role:'assistant',
-          content:response,
-          ingredientList:ingredientMatches,
-          searchTerm,
-          msgId:Date.now()
-        }]);
-        speakReply(response);  // speak the "Here are the dishes with X" heading
         setLoading(false);
+        if(onCarousel){
+          onClose();
+          onCarousel(ingredientMatches, searchTerm||'', response||"Here's what we have!");
+        } else {
+          setMsgs(p=>[...p,{
+            role:'assistant',
+            content:response,
+            ingredientList:ingredientMatches,
+            searchTerm,
+            msgId:Date.now()
+          }]);
+          speakReply(response);
+        }
         return;
       }
 
@@ -3077,15 +3140,13 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
 
   async function uploadToSupabase(file){
     if(!sbUrl||!sbKey){
-      setUploadMsg('❌ No Supabase configured. Go to Admin → Settings → Supabase and add your Project URL, Anon Key, and Bucket name.');
+      // No Supabase -- store as local blob
+      const data=await readFileAsDataURL(file);
+      onUrlChange(data);onFilenameChange('');
+      setUploadMsg('✓ Stored locally (add Supabase in Settings to sync across devices)');
       return;
     }
-    const sizeMB=(file.size/(1024*1024)).toFixed(1);
-    if(file.size>100*1024*1024){
-      setUploadMsg('⚠️ File is '+sizeMB+'MB — may be too large. Try a shorter or lower-res video.');
-      return;
-    }
-    setUploading(true);setUploadMsg('Uploading '+sizeMB+'MB…');
+    setUploading(true);setUploadMsg('Uploading…');
     const filename=file.name.toLowerCase().replace(/[^a-z0-9._-]/g,'-');
     try{
       const res=await fetch(`${sbUrl}/storage/v1/object/${sbBucket}/${filename}`,{
@@ -3093,28 +3154,17 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
         headers:{'apikey':sbKey,'Authorization':'Bearer '+sbKey,'Content-Type':file.type,'x-upsert':'true'},
         body:file,
       });
-      const text=await res.text();
-      let d;
-      try{d=JSON.parse(text);}catch(parseErr){
-        if(!res.ok) throw new Error('HTTP '+res.status+': '+text.substring(0,120));
-        d={};
-      }
-      console.log('[Supabase] Upload response:',d,'status:',res.status);
-      if(!res.ok||d.error){
-        const errMsg=d.error?.message||d.message||d.error||text.substring(0,120);
-        if(res.status===403||/policy|permission|not allowed|unauthorized/i.test(String(errMsg))){
-          throw new Error('Permission denied — add an INSERT policy for anon in Supabase Storage.');
-        }
-        if(res.status===404||/not found|bucket/i.test(String(errMsg))){
-          throw new Error('Bucket "'+sbBucket+'" not found — create it in Supabase Dashboard → Storage.');
-        }
-        throw new Error(String(errMsg));
-      }
+      const d=await res.json();
+      console.log('[Supabase] Upload response:',d);
+      if(d.error){throw new Error(d.error.message||JSON.stringify(d.error));}
       onFilenameChange(filename);onUrlChange('');
-      setUploadMsg('✅ Uploaded: '+filename+' ('+sizeMB+'MB)');
+      setUploadMsg('✓ Uploaded: '+filename);
     }catch(e){
       console.error('[Supabase] Upload failed:',e);
-      setUploadMsg('❌ Upload failed: '+e.message);
+      // Fallback to local blob
+      const data=await readFileAsDataURL(file);
+      onUrlChange(data);onFilenameChange('');
+      setUploadMsg('⚠️ Supabase upload failed ('+e.message+') -- stored locally');
     }
     setUploading(false);
   }
@@ -4781,6 +4831,266 @@ function MyOrderScreen({onViewOrder}){
 }
 
 // ==========================================
+// ADMIN - CAROUSEL SETTINGS
+// Configure which items appear in the carousel, trigger phrases,
+// and display behaviour. Settings saved to localStorage.
+// ==========================================
+function AdminCarousel({menu, showToast}){
+  const KEY = 'stellas_carousel_cfg';
+  const DEF = {
+    enabled: true,
+    popupMode: 'voice',
+    style: 'overlay',
+    showPrice: true,
+    showAddBtn: true,
+    addBtnLabel: '+ Add',
+    triggers: [],
+    pinnedIds: [],
+  };
+
+  const load = () => { try{ return {...DEF,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }catch(e){ return DEF; } };
+  const [cfg, setCfg] = useState(load);
+  const [newPhrase, setNewPhrase] = useState('');
+  const [newPhraseItems, setNewPhraseItems] = useState([]);
+  const [section, setSection] = useState('triggers');
+
+  function save(nextCfg){
+    const c = nextCfg || cfg;
+    localStorage.setItem(KEY, JSON.stringify(c));
+    setCfg(c);
+    showToast('Carousel saved');
+  }
+  function upd(k,v){ setCfg(p => ({...p,[k]:v})); }
+
+  const visibleItems = menu.filter(i => i.visible);
+
+  function addTrigger(){
+    if(!newPhrase.trim()){ showToast('Enter a trigger phrase first'); return; }
+    if(!newPhraseItems.length){ showToast('Select at least one item'); return; }
+    const t = {phrase: newPhrase.trim().toLowerCase(), itemIds: newPhraseItems};
+    const next = {...cfg, triggers:[...cfg.triggers, t]};
+    save(next); setNewPhrase(''); setNewPhraseItems([]);
+  }
+  function deleteTrigger(i){
+    const next = {...cfg, triggers: cfg.triggers.filter((_,idx)=>idx!==i)};
+    save(next);
+  }
+  function toggleTriggerItem(id){
+    setNewPhraseItems(p => p.includes(id) ? p.filter(x=>x!==id) : [...p,id]);
+  }
+  function togglePinned(id){
+    const next = {...cfg, pinnedIds: cfg.pinnedIds.includes(id) ? cfg.pinnedIds.filter(x=>x!==id) : [...cfg.pinnedIds,id]};
+    save(next);
+  }
+
+  const tabStyle = active => ({
+    padding:'8px 16px', borderRadius:'8px 8px 0 0', border:'none', cursor:'pointer',
+    fontFamily:"'Lato',sans-serif", fontSize:13, fontWeight:700,
+    background: active ? 'white' : 'rgba(201,168,76,.12)',
+    color: active ? 'var(--text1)' : 'var(--text3)',
+    borderBottom: active ? '2px solid var(--gold)' : '2px solid transparent',
+  });
+
+  const pill = (label, active, onClick) => h('button',{
+    onClick, style:{
+      padding:'6px 14px', borderRadius:20, border:'1.5px solid var(--gold)', fontSize:12,
+      fontWeight:700, cursor:'pointer', fontFamily:"'Lato',sans-serif",
+      background: active ? 'var(--green)' : 'transparent',
+      color: active ? 'white' : 'var(--text2)',
+    }
+  }, label);
+
+  return h('div', null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Carousel Settings'),
+      h('label',{className:'tgl'},
+        h('input',{type:'checkbox',checked:cfg.enabled,onChange:e=>{ const n={...cfg,enabled:e.target.checked}; save(n); }}),
+        h('span',{className:'tgl-slider'})
+      )
+    ),
+    h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:16,lineHeight:1.5}},
+      cfg.enabled
+        ? 'Carousel is ON \u2014 scrollable cards appear over Anna\'s photo when she shows a group of items.'
+        : 'Carousel is OFF \u2014 Anna lists items in the text bubble only.'
+    ),
+
+    h('div',{style:{display:'flex',gap:4,marginBottom:16,borderBottom:'2px solid rgba(201,168,76,.2)'}},
+      h('button',{style:tabStyle(section==='triggers'),onClick:()=>setSection('triggers')},'Triggers'),
+      h('button',{style:tabStyle(section==='pinned'),onClick:()=>setSection('pinned')},'Pinned Items'),
+      h('button',{style:tabStyle(section==='display'),onClick:()=>setSection('display')},'Display')
+    ),
+
+    // TRIGGERS TAB
+    section==='triggers'&&h('div',null,
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
+        'Set phrases that trigger the carousel with specific items. When someone says that phrase, Anna shows those items as cards.'
+      ),
+
+      cfg.triggers.length===0&&h('div',{style:{
+        textAlign:'center',padding:'24px 16px',background:'rgba(201,168,76,.06)',
+        borderRadius:12,border:'1.5px dashed var(--gold)',marginBottom:16,color:'var(--text3)',fontSize:13
+      }},'No triggers yet \u2014 add one below'),
+
+      cfg.triggers.map((t,i) => {
+        const items = t.itemIds.map(id => visibleItems.find(it=>it.id===id)).filter(Boolean);
+        return h('div',{key:i,className:'glass',style:{padding:14,marginBottom:10}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},
+            h('div',null,
+              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},'"'+t.phrase+'"'),
+              h('div',{style:{fontSize:11,color:'var(--text3)'}},items.length+' item'+(items.length!==1?'s':''))
+            ),
+            h('button',{onClick:()=>deleteTrigger(i),style:{background:'rgba(220,60,60,.08)',border:'1px solid rgba(220,60,60,.25)',borderRadius:8,padding:'5px 10px',fontSize:12,fontWeight:700,cursor:'pointer',color:'var(--red)',fontFamily:"'Lato',sans-serif"}},'Delete')
+          ),
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+            items.map(it=>h('div',{key:it.id,style:{
+              display:'flex',alignItems:'center',gap:6,padding:'4px 10px',
+              background:'rgba(42,90,64,.1)',borderRadius:20,fontSize:12,color:'var(--green2)'
+            }},
+              it.imgUrl&&h('img',{src:it.imgUrl,style:{width:20,height:20,borderRadius:4,objectFit:'cover'}}),
+              it.name,' \u00B7 $'+it.price
+            ))
+          )
+        );
+      }),
+
+      h('div',{className:'glass',style:{padding:16,marginTop:8}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'+ Add Trigger'),
+
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Trigger phrase'),
+          h('input',{
+            value:newPhrase,
+            onChange:e=>setNewPhrase(e.target.value),
+            placeholder:'e.g. show me drinks, what\'s good tonight',
+            className:'field'
+          }),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'When someone says this, the carousel shows the items you pick below.')
+        ),
+
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Items to show'),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:8}},'Tap to select \u2014 these cards appear in the carousel for this phrase.'),
+          h('div',{style:{display:'flex',flexDirection:'column',gap:6,maxHeight:280,overflowY:'auto'}},
+            visibleItems.map(it => {
+              const selected = newPhraseItems.includes(it.id);
+              return h('div',{
+                key:it.id,
+                onClick:()=>toggleTriggerItem(it.id),
+                style:{
+                  display:'flex',alignItems:'center',gap:10,padding:'9px 12px',
+                  borderRadius:10,cursor:'pointer',border:'1.5px solid',
+                  borderColor: selected ? 'var(--green2)' : 'rgba(201,168,76,.3)',
+                  background: selected ? 'rgba(42,90,64,.08)' : 'white',
+                }
+              },
+                it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:40,height:40,borderRadius:8,objectFit:'cover',flexShrink:0}}),
+                h('div',{style:{flex:1}},
+                  h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' \u00B7 '+it.name),
+                  h('div',{style:{fontSize:11,color:'var(--text3)'}},'\u2726 '+it.cat)
+                ),
+                h('div',{style:{
+                  width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
+                  borderColor:selected?'var(--green2)':'var(--gold)',
+                  background:selected?'var(--green2)':'transparent',
+                  display:'flex',alignItems:'center',justifyContent:'center',
+                  color:'white',fontSize:13,fontWeight:700
+                }},selected?'\u2713':'')
+              );
+            })
+          )
+        ),
+
+        h('button',{
+          className:'btn btn-green',
+          style:{width:'100%',marginTop:4},
+          onClick:addTrigger
+        },'Add Trigger ('+newPhraseItems.length+' item'+(newPhraseItems.length!==1?'s':'')+')')
+      )
+    ),
+
+    // PINNED ITEMS TAB
+    section==='pinned'&&h('div',null,
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
+        'Pinned items always appear at the front of every carousel, no matter what was asked.'
+      ),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:6}},
+        visibleItems.map(it => {
+          const pinned = cfg.pinnedIds.includes(it.id);
+          return h('div',{
+            key:it.id,
+            onClick:()=>togglePinned(it.id),
+            style:{
+              display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
+              borderRadius:10,cursor:'pointer',border:'1.5px solid',
+              borderColor:pinned?'var(--green2)':'rgba(201,168,76,.3)',
+              background:pinned?'rgba(42,90,64,.08)':'white',
+            }
+          },
+            it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:44,height:44,borderRadius:8,objectFit:'cover',flexShrink:0}}),
+            h('div',{style:{flex:1}},
+              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' \u00B7 '+it.name),
+              h('div',{style:{fontSize:11,color:'var(--text3)'}},'\u2726 '+it.cat)
+            ),
+            h('div',{style:{
+              width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
+              borderColor:pinned?'var(--green2)':'var(--gold)',
+              background:pinned?'var(--green2)':'transparent',
+              display:'flex',alignItems:'center',justifyContent:'center',
+              color:'white',fontSize:13,fontWeight:700
+            }},pinned?'\uD83D\uDCCC':'')
+          );
+        })
+      ),
+      cfg.pinnedIds.length>0&&h('button',{
+        className:'btn btn-gold btn-sm',
+        style:{marginTop:12,width:'100%'},
+        onClick:()=>save({...cfg,pinnedIds:[]})
+      },'Clear all pinned')
+    ),
+
+    // DISPLAY TAB
+    section==='display'&&h('div',null,
+      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'When to pop up'),
+        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}},
+          pill('After voice query', cfg.popupMode==='voice', ()=>upd('popupMode','voice')),
+          pill('Always', cfg.popupMode==='always', ()=>upd('popupMode','always'))
+        ),
+        h('div',{style:{fontSize:11,color:'var(--text3)'}},
+          cfg.popupMode==='voice'
+            ? 'Carousel only pops up after spoken queries \u2014 text chat shows a list instead.'
+            : 'Carousel appears on both voice and text chat responses.'
+        )
+      ),
+      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'Card content'),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            h('span',{style:{fontSize:13,color:'var(--text2)'}},'Show price on card'),
+            h('label',{className:'tgl'},
+              h('input',{type:'checkbox',checked:cfg.showPrice,onChange:e=>upd('showPrice',e.target.checked)}),
+              h('span',{className:'tgl-slider'})
+            )
+          ),
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            h('span',{style:{fontSize:13,color:'var(--text2)'}},'"+ Add" button'),
+            h('label',{className:'tgl'},
+              h('input',{type:'checkbox',checked:cfg.showAddBtn,onChange:e=>upd('showAddBtn',e.target.checked)}),
+              h('span',{className:'tgl-slider'})
+            )
+          ),
+          cfg.showAddBtn&&h('div',null,
+            h('label',{className:'label'},'Button label'),
+            h('input',{value:cfg.addBtnLabel,onChange:e=>upd('addBtnLabel',e.target.value),className:'field',placeholder:'+ Add'})
+          )
+        )
+      ),
+      h('button',{className:'btn btn-green',style:{width:'100%'},onClick:()=>save()},'Save Display Settings')
+    )
+  );
+}
+
+// ==========================================
 // -------- MAIN APP ------------------------
 // ==========================================
 function App(){
@@ -4816,6 +5126,8 @@ function App(){
   const[showTakeoutCart,setShowTakeoutCart]=useState(false);
   const[pendingTakeoutItem,setPendingTakeoutItem]=useState(null);
   const[takeoutConfirmed,setTakeoutConfirmed]=useState(null);
+  const[carouselItems,setCarouselItems]=useState([]);
+  const[carouselLabel,setCarouselLabel]=useState('');
   const recRef=useRef();
 
   // Load data: Supabase first, IndexedDB fallback -- runs on every mount
@@ -4974,6 +5286,22 @@ function App(){
     console.log('[Voice] Processing:', text, '| Table mode:', tableNum||'none');
     setThinking(true);
     try{
+    // -- Priority -1: Check carousel triggers (Admin > Carousel tab) first --
+    const carouselVoiceHit = matchCarouselTrigger(text, menu);
+    if(carouselVoiceHit){
+      console.log("[Carousel] Voice trigger matched:", carouselVoiceHit.label);
+      setThinking(false);
+      setCarouselItems(carouselVoiceHit.items);
+      setCarouselLabel(carouselVoiceHit.label);
+      setAiResponse(carouselVoiceHit.response);
+      setSelectedItem(null);
+      setVideoUrl("");
+      setOrdered(false);
+      setHeygenFallback(false);
+      setScreen("response");
+      return;
+    }
+
     // -- Priority 0: Scan ALL menu item triggers first (works from any screen) --
     // Then also check activeItem/selectedItem for context-specific triggers
     const globalVoiceTrigger = matchAnyMenuTrigger(text, menu);
@@ -5042,9 +5370,25 @@ function App(){
       return;
     }
 
-      const{response,item,videoUrl:vid,noKey,orderIntent}=await askAI(text,menu,messages,tableNum,faq||[]);
+      const{response,item,videoUrl:vid,noKey,orderIntent,ingredientMatches:vCarousel,searchTerm:vTerm}=await askAI(text,menu,messages,tableNum,faq||[]);
       setThinking(false);
       if(noKey){showToast(response);setScreen('home');return;}
+
+      // Carousel -- category/group query result from askAI
+      if(vCarousel&&vCarousel.length>0){
+        console.log('[Carousel] Voice category result:', vTerm, '->', vCarousel.length, 'items');
+        setCarouselItems(vCarousel);
+        setCarouselLabel(vTerm||'');
+        setAiResponse(response||"Here's what we have!");
+        setSelectedItem(null);
+        setVideoUrl('');
+        setOrdered(false);
+        setHeygenFallback(false);
+        setScreen('response');
+        return;
+      }
+      setCarouselItems([]);
+      setCarouselLabel('');
 
       // CRITICAL: always update activeItem from voice result so context phrases work
       if(item){ setActiveItem(item); console.log('[Voice] Current item on page:', item.name); }
@@ -5085,6 +5429,8 @@ function App(){
     }catch(err){
       console.error('[processVoiceText]',err);
       setThinking(false);
+      setCarouselItems([]);
+      setCarouselLabel('');
       setAiResponse("Let me check that for you!");
       setSelectedItem(null);
       setVideoUrl('');
@@ -5353,10 +5699,12 @@ function App(){
     {id:'takeout',label:'Takeout',icon:I.bag},
     {id:'menu',label:'Menu',icon:I.menu},
     {id:'messages',label:'Messages',icon:I.msg},
+    {id:'carousel',label:'Carousel',icon:I.promote},
     {id:'faq',label:'FAQ',icon:I.star},
     {id:'qr',label:'QR Codes',icon:I.qr},
     {id:'analytics',label:'Analytics',icon:I.star},
     {id:'settings',label:'Settings',icon:I.gear},
+    {id:'bulk',label:'Bulk Import',icon:I.download},
   ];
 
   return h('div',{style:{display:'flex',flexDirection:'column',height:'100%',width:'100%',background:'var(--cream)',position:'relative',overflow:'hidden'}},
@@ -5423,10 +5771,12 @@ function App(){
         adminTab==='takeout'&&h(AdminTakeout,{showToast}),
         adminTab==='menu'&&h(AdminMenu,{menu,setMenu,showToast}),
         adminTab==='messages'&&h(AdminMessages,{messages,setMessages,showToast}),
+        adminTab==='carousel'&&h(AdminCarousel,{menu,showToast}),
         adminTab==='faq'&&h(AdminFAQ,{faq,setFaq,showToast}),
         adminTab==='qr'&&h(AdminQR,{tableOrders}),
         adminTab==='analytics'&&h(AdminAnalytics,{tableOrders}),
         adminTab==='settings'&&h(AdminSettingsPanel,{showToast}),
+        adminTab==='bulk'&&h(AdminBulkImport,{showToast,setMenu,loadMenuData}),
       )
     ),
     
@@ -5453,7 +5803,7 @@ function App(){
     
     !showAdmin&&screen==='home'&&h(HomeScreen,{menu,messages,onSpeak:()=>{forceUnlock();startListening();},onItemSelect:handleItemSelect,onCardAsk:handleCardAsk,tableNum,homeTitles:store.get('stellas_home_titles',homeTitles)}),
     !showAdmin&&screen==='listening'&&h(ListeningScreen,{transcript,onStop:stopListen,thinking,staticImgSrc:getWelcomeImage(messages)||''}),
-    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback}),
+    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd:(it)=>{if(tableNum){placeOrder(it);}else{setTakeoutCart(c=>[...c,it]);showToast('\u2713 '+it.name+' added!');}}}),
     !showAdmin&&screen==='menu'&&h(MenuScreen,{menu,onItemSelect:handleItemSelect}),
     !showAdmin&&screen==='locations'&&h(LocationsScreen),
     !showAdmin&&screen==='myorder'&&h(MyOrderScreen,{key:orderVersion,
@@ -5479,7 +5829,389 @@ function App(){
       ].map(item=>h('button',{key:item.id,className:`nav-btn ${navTab===item.id?'active':''}`,onClick:()=>handleNav(item.id)},h('div',{style:{width:22,height:22}},item.icon),h('span',null,item.label)))
     ),
     
-    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
+    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,onCarousel:(items,label,resp)=>{setCarouselItems(items);setCarouselLabel(label||'');setAiResponse(resp||"Here's what we have!");setSelectedItem(null);setVideoUrl('');setOrdered(false);setHeygenFallback(false);setScreen('response');setNavTab('home');},tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════
+// ADMIN — BULK IMPORT TAB
+// Uses the app's own sbUpsert() + menuToSB() for correct field mapping
+// ══════════════════════════════════════════════════════════
+function AdminBulkImport({showToast}) {
+  const[mediaFiles,setMediaFiles]=useState({});
+  const[uploadedMedia,setUploadedMedia]=useState({});
+  const[parsedRows,setParsedRows]=useState([]);
+  const[mediaProgress,setMediaProgress]=useState(0);
+  const[mediaStatus,setMediaStatus]=useState('');
+  const[importProgress,setImportProgress]=useState(0);
+  const[importStatus,setImportStatus]=useState('');
+  const[rowStatuses,setRowStatuses]=useState({});
+  const[importing,setImporting]=useState(false);
+  const[uploadingMedia,setUploadingMedia]=useState(false);
+  const[connStatus,setConnStatus]=useState('');
+  const fileRef=useRef();
+  const csvRef=useRef();
+
+  const cfg=sbCfg();
+  const connected=!!cfg;
+  const sbBucket=store.get('stellas_sb_bucket','videos')||'videos';
+
+  async function testConn(){
+    if(!cfg){setConnStatus('Set Supabase URL & Key in Settings first');return;}
+    setConnStatus('Testing...');
+    try{
+      const r=await fetch(cfg.url+'/rest/v1/menu_items?limit=1',{
+        headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key}
+      });
+      setConnStatus(r.ok?'Connected! Ready to import.':'Error '+r.status);
+    }catch(e){setConnStatus('Error: '+e.message);}
+  }
+
+  function parseCSVLine(line){
+    const r=[];let cur='';let inQ=false;
+    for(let i=0;i<line.length;i++){
+      if(line[i]==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
+      else if(line[i]===','&&!inQ){r.push(cur);cur='';}
+      else cur+=line[i];
+    }
+    r.push(cur);return r;
+  }
+
+  function parseCSV(text){
+    // Strip BOM, normalize Windows \r\n and Mac \r line endings
+    text=text.replace(/^\uFEFF/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    const lines=text.split('\n').filter(function(l){return l.trim();});
+    if(lines.length<2){console.warn('[Bulk] CSV has fewer than 2 lines');return[];}
+    const headers=parseCSVLine(lines[0]).map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');});
+    console.log('[Bulk] CSV headers found:',headers);
+    const rows=[];
+    for(var i=1;i<lines.length;i++){
+      if(!lines[i].trim())continue;
+      const vals=parseCSVLine(lines[i]);
+      const row={};
+      headers.forEach(function(h,idx){row[h]=(vals[idx]||'').trim();});
+      // Accept row if it has a name field (check multiple possible column names)
+      const rowName=row.name||row.item_name||row.item||'';
+      if(rowName){
+        if(!row.name)row.name=rowName; // normalize to 'name'
+        rows.push(row);
+      }
+    }
+    console.log('[Bulk] Parsed',rows.length,'rows from',lines.length-1,'data lines');
+    return rows;
+  }
+
+  function downloadTemplate(){
+    const hdr='name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible';
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([hdr+'\n'],{type:'text/csv'}));
+    a.download='stellas_menu_template.csv';a.click();
+  }
+
+  function downloadExample(){
+    const rows=[
+      'name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible',
+      'Margherita Pizza,18,Mains,Classic pizza with San Marzano tomatoes and fresh mozzarella,flour|tomato|mozzarella|basil,margherita.jpg,margherita.mp4,"tell me about the margherita, show me the pizza",item-request,true',
+      'Pepperoni Pizza,21,Mains,House sauce with pepperoni and mozzarella,flour|tomato|mozzarella|pepperoni,pepperoni.jpg,,"pepperoni pizza",item-request,true',
+      'Tiramisu,12,Desserts,Classic tiramisu with mascarpone and espresso-soaked ladyfingers,mascarpone|espresso|ladyfingers|cocoa,tiramisu.jpg,tiramisu.mp4,"show me desserts, tiramisu",item-request,true',
+    ];
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+    a.download='stellas_menu_example.csv';a.click();
+  }
+
+  function handleMediaFiles(files){
+    const nf={...mediaFiles};
+    for(const f of files)nf[f.name]=f;
+    setMediaFiles(nf);
+  }
+
+  async function uploadAllMedia(){
+    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
+    const files=Object.values(mediaFiles);
+    if(!files.length){showToast('No files selected');return;}
+    setUploadingMedia(true);
+    const uploaded={...uploadedMedia};
+    for(let i=0;i<files.length;i++){
+      const f=files[i];
+      setMediaStatus('Uploading '+f.name+' ('+(i+1)+'/'+files.length+')...');
+      setMediaProgress(Math.round(i/files.length*100));
+      try{
+        const res=await fetch(cfg.url+'/storage/v1/object/'+sbBucket+'/'+encodeURIComponent(f.name),{
+          method:'POST',
+          headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key,'Content-Type':f.type,'x-upsert':'true'},
+          body:f
+        });
+        if(res.ok||res.status===200){
+          uploaded[f.name]=cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(f.name);
+        } else {
+          const t=await res.text();
+          console.error('[Bulk] Upload failed:',f.name,res.status,t);
+        }
+      }catch(e){console.warn('[Bulk] Upload error:',f.name,e.message);}
+    }
+    setUploadedMedia(uploaded);
+    setMediaProgress(100);
+    const n=Object.keys(uploaded).length;
+    setMediaStatus(n+' file'+(n!==1?'s':'')+' uploaded!');
+    setUploadingMedia(false);
+    showToast(n+' files uploaded!');
+  }
+
+  function handleCSV(file){
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=function(e){
+      const rows=parseCSV(e.target.result);
+      if(!rows.length){showToast('No valid rows found in CSV');return;}
+      setParsedRows(rows);
+      setRowStatuses({});
+      setImportProgress(0);
+      setImportStatus('');
+      showToast(rows.length+' items parsed and ready to import');
+    };
+    reader.readAsText(file);
+  }
+
+  async function importAll(){
+    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
+    if(!parsedRows.length){showToast('Upload a CSV first');return;}
+    setImporting(true);
+    const statuses={};
+    let ok=0,fail=0;
+    for(let i=0;i<parsedRows.length;i++){
+      const row=parsedRows[i];
+      statuses[i]='importing';
+      setRowStatuses({...statuses});
+      setImportProgress(Math.round(i/parsedRows.length*100));
+      setImportStatus('Importing '+row.name+'... ('+(i+1)+'/'+parsedRows.length+')');
+      try{
+        const imgFile=row.image_filename||row.image||'';
+        const vidFile=row.video_filename||row.video||'';
+        const imgUrl=uploadedMedia[imgFile]
+          ||(imgFile&&imgFile.startsWith('http')?imgFile:'')
+          ||(imgFile?cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(imgFile):'')
+          ||row.img_url||'';
+        const vidUrl=uploadedMedia[vidFile]
+          ||(vidFile&&vidFile.startsWith('http')?vidFile:'')
+          ||row.video_url||'';
+        const trigKw=row.trigger_keywords||'';
+        const trigAction=row.trigger_action||'item-request';
+        const triggers=trigKw?[{keywords:trigKw,action:trigAction,videoFilename:vidFile}]:[];
+        // Build using JS app's field names so menuToSB() maps them correctly
+        const item={
+          id:Date.now()*100+i,
+          name:row.name,
+          price:parseFloat(row.price)||0,
+          cat:row.category||row.cat||'Mains',
+          desc:row.description||row.desc||'',
+          ing:(row.ingredients||row.ing||'').replace(/\|/g,', '),
+          imgUrl:imgUrl,
+          videoUrl:vidUrl,
+          videoFilename:vidFile,
+          visible:row.visible!=='false',
+          triggerKeywords:trigKw,
+          triggerType:trigAction,
+          triggers:triggers,
+        };
+        // Use the app's own sbUpsert+menuToSB — exact same path as saving from Menu tab
+        await sbUpsert('menu_items', menuToSB(item));
+        ok++;
+        statuses[i]='ok';
+      }catch(e){
+        console.error('[Bulk] Failed:',row.name,e.message);
+        fail++;
+        statuses[i]='fail';
+      }
+      setRowStatuses({...statuses});
+      await new Promise(function(resolve){setTimeout(resolve,150);});
+    }
+    setImportProgress(100);
+    setImportStatus(ok+' imported'+(fail>0?', '+fail+' failed! Check console for errors.':'! Reloading menu...'));
+    setImporting(false);
+    showToast(ok+' items imported!');
+    // Reload menu from Supabase so new items appear immediately without page refresh
+    if(ok>0 && loadMenuData && setMenu){
+      try{
+        const freshMenu=await loadMenuData();
+        if(freshMenu&&freshMenu.length){
+          setMenu(freshMenu);
+          showToast('Menu updated — '+freshMenu.length+' total items loaded!');
+          setImportStatus(ok+' items imported and menu refreshed!');
+        }
+      }catch(e){
+        console.warn('[Bulk] Menu reload failed:',e);
+        showToast('Imported! Refresh the page to see new items.');
+      }
+    }
+  }
+
+  const mediaCount=Object.keys(mediaFiles).length;
+  const dropStyle={border:'2px dashed var(--gold)',borderRadius:14,padding:24,textAlign:'center',cursor:'pointer',background:'rgba(201,168,76,.04)'};
+
+  function ProgBar({pct}){
+    return h('div',{style:{height:6,background:'rgba(201,168,76,.2)',borderRadius:3,overflow:'hidden',margin:'6px 0'}},
+      h('div',{style:{height:'100%',background:'linear-gradient(to right,var(--green2),var(--gold))',width:pct+'%',transition:'width .3s'}})
+    );
+  }
+
+  function SPill({s}){
+    if(!s)return h('span',{style:{fontSize:11,color:'var(--text3)'}},'Ready');
+    if(s==='importing')return h('span',{style:{fontSize:11,background:'rgba(201,168,76,.15)',color:'var(--gold3)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'...');
+    if(s==='ok')return h('span',{style:{fontSize:11,background:'rgba(42,90,64,.12)',color:'var(--green2)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Saved');
+    return h('span',{style:{fontSize:11,background:'rgba(220,60,60,.1)',color:'var(--red)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Failed');
+  }
+
+  return h('div',null,
+
+    h('div',{style:{marginBottom:16}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Bulk Menu Import'),
+      h('div',{style:{fontSize:12,color:'var(--text3)',marginTop:2}},'Upload a CSV + images/videos to populate your menu at once')
+    ),
+
+    h('div',{className:'glass',style:{padding:12,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}},
+      h('div',null,
+        connected
+          ? h('span',{style:{fontSize:13,color:'var(--green2)',fontWeight:700}},'Supabase connected')
+          : h('span',{style:{fontSize:13,color:'var(--red)'}},'No Supabase credentials — go to Settings tab'),
+        connStatus&&h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:3}},connStatus)
+      ),
+      h('button',{className:'btn btn-gold btn-sm',onClick:testConn},'Test Connection')
+    ),
+
+    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Download CSV Template'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))',gap:6,marginBottom:12}},
+        [{n:'name',d:'Required'},{n:'price',d:'Required'},{n:'category',d:'Starters, Mains...'},
+         {n:'description',d:'Item description'},{n:'ingredients',d:'Use | between items'},
+         {n:'image_filename',d:'e.g. pizza.jpg'},{n:'video_filename',d:'e.g. pizza.mp4'},
+         {n:'trigger_keywords',d:'comma-separated'},{n:'trigger_action',d:'item-request'},
+         {n:'visible',d:'true or false'}
+        ].map(function(c){
+          return h('div',{key:c.n,style:{background:'rgba(42,90,64,.08)',border:'1px solid rgba(42,90,64,.2)',borderRadius:8,padding:'5px 8px'}},
+            h('div',{style:{fontSize:11,fontWeight:700,color:'var(--green2)'}},c.n),
+            h('div',{style:{fontSize:10,color:'var(--text3)',marginTop:1}},c.d)
+          );
+        })
+      ),
+      h('div',{style:{display:'flex',gap:10,flexWrap:'wrap'}},
+        h('button',{className:'btn btn-green btn-sm',onClick:downloadTemplate},'Download Blank Template'),
+        h('button',{className:'btn btn-gold btn-sm',onClick:downloadExample},'Download Example (3 items)')
+      )
+    ),
+
+    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:4}},' Upload Images & Videos'),
+      h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:10}},'Select all files at once. Max 50MB per file on Supabase free tier.'),
+      h('div',{style:dropStyle,
+        onClick:function(){if(fileRef.current)fileRef.current.click();},
+        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
+        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
+        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';handleMediaFiles(e.dataTransfer.files);}
+      },
+        h('div',{style:{fontSize:28,marginBottom:4}},'Files'),
+        h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
+          mediaCount>0?mediaCount+' file'+(mediaCount!==1?'s':'')+' selected':'Click or drag files here'
+        ),
+        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'Images: .jpg .png .webp  Videos: .mp4 .mov')
+      ),
+      h('input',{ref:fileRef,type:'file',accept:'image/*,video/mp4,video/quicktime',multiple:true,
+        style:{display:'none'},
+        onChange:function(e){handleMediaFiles(e.target.files);}}),
+      mediaCount>0&&h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}},
+        Object.keys(mediaFiles).map(function(name){
+          return h('div',{key:name,style:{
+            background:'white',
+            border:'1px solid '+(uploadedMedia[name]?'var(--green2)':'rgba(201,168,76,.3)'),
+            borderRadius:8,padding:'3px 10px',fontSize:11,color:'var(--text2)',display:'flex',alignItems:'center',gap:5
+          }},
+            mediaFiles[name].type.startsWith('image/')?'IMG':'VID',
+            ' ',name,
+            uploadedMedia[name]?' OK':''
+          );
+        })
+      ),
+      mediaStatus&&h('div',{style:{marginTop:8}},
+        h(ProgBar,{pct:mediaProgress}),
+        h('div',{style:{fontSize:12,color:'var(--text2)'}},mediaStatus)
+      ),
+      mediaCount>0&&h('button',{
+        className:'btn btn-green btn-sm',
+        style:{marginTop:12,opacity:uploadingMedia?0.6:1},
+        onClick:uploadAllMedia,
+        disabled:uploadingMedia||!connected
+      },uploadingMedia?'Uploading...':'Upload '+mediaCount+' File'+(mediaCount!==1?'s':'')+' to Supabase')
+    ),
+
+    h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Upload Menu CSV'),
+      h('div',{style:dropStyle,
+        onClick:function(){if(csvRef.current)csvRef.current.click();},
+        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
+        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
+        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';if(e.dataTransfer.files[0])handleCSV(e.dataTransfer.files[0]);}
+      },
+        h('div',{style:{fontSize:28,marginBottom:4}},parsedRows.length>0?'OK':'CSV'),
+        h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
+          parsedRows.length>0?parsedRows.length+' items parsed and ready':'Click to select your CSV file'
+        ),
+        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'menu.csv')
+      ),
+      h('input',{ref:csvRef,type:'file',accept:'.csv,text/csv',style:{display:'none'},
+        onChange:function(e){if(e.target.files[0])handleCSV(e.target.files[0]);}})
+    ),
+
+    parsedRows.length>0&&h('div',{className:'glass',style:{padding:16}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)'}},' Preview & Import'),
+        h('div',{style:{display:'flex',gap:8}},
+          h('button',{
+            className:'btn btn-green btn-sm',
+            onClick:importAll,
+            disabled:importing||!connected,
+            style:{opacity:importing||!connected?0.6:1}
+          },importing?'Importing...':'Import All ('+parsedRows.length+' items)'),
+          h('button',{
+            className:'btn btn-gold btn-sm',
+            onClick:function(){setParsedRows([]);setRowStatuses({});setImportProgress(0);setImportStatus('');}
+          },'Clear')
+        )
+      ),
+      importStatus&&h('div',{style:{marginBottom:12}},
+        h(ProgBar,{pct:importProgress}),
+        h('div',{style:{fontSize:12,color:'var(--text2)'}},importStatus)
+      ),
+      h('div',{style:{overflowX:'auto'}},
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+          h('thead',null,
+            h('tr',null,
+              ['Name','Price','Category','Image','Video','Triggers','Status'].map(function(col){
+                return h('th',{key:col,style:{background:'var(--green)',color:'white',padding:'8px 10px',textAlign:'left',fontSize:11}},col);
+              })
+            )
+          ),
+          h('tbody',null,
+            parsedRows.map(function(row,i){
+              const imgFile=row.image_filename||'';
+              const vidFile=row.video_filename||'';
+              const trigKw=row.trigger_keywords||'';
+              const n=trigKw?trigKw.split(',').filter(function(t){return t.trim();}).length:0;
+              const td={padding:'7px 10px',borderBottom:'1px solid rgba(201,168,76,.15)',verticalAlign:'middle'};
+              return h('tr',{key:i},
+                h('td',{style:td},h('strong',null,row.name)),
+                h('td',{style:td},'$'+(row.price||'0')),
+                h('td',{style:td},row.category||'Mains'),
+                h('td',{style:td},imgFile||'—'),
+                h('td',{style:td},vidFile||'—'),
+                h('td',{style:td},n?n+' triggers':'—'),
+                h('td',{style:td},h(SPill,{s:rowStatuses[i]}))
+              );
+            })
+          )
+        )
+      )
+    )
   );
 }
 
