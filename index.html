@@ -773,30 +773,34 @@ function matchMenuItem(rawName, menu) {
   const q = rawName.toLowerCase().trim();
   const items = menu.filter(i => i.visible);
 
-  // 1. Exact name match
+  // 1. Exact name
   let hit = items.find(i => i.name.toLowerCase() === q);
   if (hit) return hit;
 
-  // 2. Name includes query
+  // 2. Name contains query or query contains name
   hit = items.find(i => i.name.toLowerCase().includes(q));
   if (hit) return hit;
-
-  // 3. Query includes name
   hit = items.find(i => q.includes(i.name.toLowerCase()));
   if (hit) return hit;
 
-  // 4. Any word in query matches any word in name or description
-  const queryWords = q.split(/\s+/).filter(w => w.length > 2);
+  // 3. Score ALL fields — name, desc, ingredients, category, trigger keywords
+  const qWords = q.split(/\s+/).filter(w => w.length > 2);
   let bestScore = 0, bestItem = null;
   for (const item of items) {
-    const haystack = (item.name + ' ' + item.desc + ' ' + (item.ing || '') + ' ' + item.cat).toLowerCase();
+    const name = item.name.toLowerCase();
+    const all = (name + ' ' + (item.desc||'') + ' ' + (item.ing||'') + ' ' + (item.cat||'') + ' ' + (item.triggerKeywords||'')).toLowerCase();
     let score = 0;
-    for (const word of queryWords) {
-      if (haystack.includes(word)) score++;
+    for (const word of qWords) {
+      if (name.includes(word)) score += 5;        // name hit = strongest signal
+      else if (all.includes(word)) score += 2;    // desc/ing/triggers hit
+      // stem match: "burger" ↔ "cheeseburger", "chicken" ↔ "chickens"
+      for (const hw of all.split(/\s+/)) {
+        if (hw.length > 3 && word.length > 3 && hw !== word && (hw.startsWith(word) || word.startsWith(hw))) score += 1;
+      }
     }
     if (score > bestScore) { bestScore = score; bestItem = item; }
   }
-  if (bestScore > 0) return bestItem;
+  if (bestScore >= 2) return bestItem;
 
   return null;
 }
@@ -1309,7 +1313,15 @@ async function askAI(question, menu, messages, tableNum, faq) {
     const quickMatch = matchMenuItem(question, menu);
     console.log('[AI] Order local fuzzy match:', quickMatch ? quickMatch.name : 'none');
 
-    const menuList = items.map(function(i, n){ return (n+1) + '. ' + i.name; }).join('\n');
+    const menuList = items.map(function(i, n){
+    var parts = [(n+1) + '. ' + i.name];
+    if (i.price)  parts.push('$' + i.price);
+    if (i.cat)    parts.push(i.cat);
+    if (i.desc)   parts.push(i.desc);
+    if (i.ing)    parts.push('ingredients: ' + i.ing);
+    if (i.triggerKeywords) parts.push('also: ' + i.triggerKeywords);
+    return parts.join(' | ');
+  }).join('\n');
     const orderPrompt = [
        'You are Anna, a friendly restaurant host at Stella\'s.',
       'A guest said: "' + question + '"',
@@ -1518,7 +1530,39 @@ async function askAI(question, menu, messages, tableNum, faq) {
     };
   }
 
-  const systemPrompt = 'You are Anna, a friendly restaurant host at Stella\'s. A guest asked: "' + question + '"\n\nMenu:\n' + menuList + '\n\nWrite a warm 1-2 sentence reply about the best matching item. On the VERY LAST LINE write exactly: ITEM:[item name] -- or ITEM:none if nothing matches. Never write anything after that line.' + langInstruction;
+  // Also send active messages so AI can match those too
+  var _activeMsgs = (messages||[]).filter(function(m){ return m.active; });
+  var msgListForAI = _activeMsgs.length
+    ? _activeMsgs.map(function(m,n){
+        var p = ['MSG'+(n+1)+'. '+m.title];
+        if (m.body) p.push(m.body);
+        if (m.triggerKeywords) p.push('triggers: '+m.triggerKeywords);
+        return p.join(' | ');
+      }).join('\n')
+    : 'none';
+
+  const systemPrompt = [
+    "You are Stella, a warm knowledgeable host at Stella's restaurant.",
+    'A guest said: "' + question + '"',
+    '',
+    'MENU (name | price | category | description | ingredients | also known as):',
+    menuList,
+    '',
+    'PRESET MESSAGES (greetings, specials, FAQs):',
+    msgListForAI,
+    '',
+    'TASK: Find the single best match using ALL fields — name, description, ingredients, synonyms, triggers.',
+    'Loose matching rules:',
+    '- "cheeseburger" or "burger" → find the closest burger item',
+    '- "something sweet" or "dessert" → find the best dessert',
+    '- "red wine" → find closest wine item',
+    '- Category questions ("what desserts", "show me drinks") → reply CATEGORY:[exact category name]',
+    '- If a preset message is the best answer → reply MSG:[exact message title]',
+    '- If a menu item is the best answer → reply ITEM:[exact item name]',
+    '- If nothing matches → reply ITEM:none',
+    'Write a warm 1-2 sentence reply FIRST, then on the VERY LAST LINE write ITEM:, MSG:, or CATEGORY:. Nothing after.',
+    langInstruction
+  ].join('\n');
 
   try {
     var rawText = '';
@@ -1540,10 +1584,32 @@ async function askAI(question, menu, messages, tableNum, faq) {
     if (!rawText.trim()) throw new Error('Empty AI response');
 
     var allLines = rawText.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
-    var itemLine = allLines.find(function(l){ return /^ITEM:/i.test(l); });
-    var extractedName = itemLine ? itemLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
-    var responseText = allLines.filter(function(l){ return !/^ITEM:/i.test(l); }).join(' ').trim() || "That sounds great -- let me tell you more!";
+    // Find the tag line — ITEM:, MSG:, or CATEGORY:
+    var tagLine = allLines.find(function(l){ return /^(ITEM:|MSG:|CATEGORY:)/i.test(l); });
+    var responseText = allLines.filter(function(l){ return !/^(ITEM:|MSG:|CATEGORY:)/i.test(l); }).join(' ').trim() || "Let me help you with that!";
 
+    // Handle CATEGORY: → show carousel of matching items
+    if (tagLine && /^CATEGORY:/i.test(tagLine)) {
+      var catName = tagLine.replace(/^CATEGORY:\s*/i,'').trim().toLowerCase();
+      console.log('[AI] Category response:', catName);
+      var catMatches = menu.filter(function(i){
+        return i.visible && ((i.cat||'').toLowerCase().includes(catName) || catName.includes((i.cat||'').toLowerCase()));
+      });
+      return { response: responseText, item: null, videoUrl: '', ingredientMatches: catMatches, searchTerm: catName };
+    }
+
+    // Handle MSG: → find and return preset message with its video
+    if (tagLine && /^MSG:/i.test(tagLine)) {
+      var msgTitle = tagLine.replace(/^MSG:\s*/i,'').trim().toLowerCase();
+      console.log('[AI] Message response:', msgTitle);
+      var _msgs = (messages||[]).filter(function(m){ return m.active; });
+      var msgHit = _msgs.find(function(m){ return m.title.toLowerCase() === msgTitle; })
+        || _msgs.find(function(m){ return m.title.toLowerCase().includes(msgTitle) || msgTitle.includes(m.title.toLowerCase()); });
+      if (msgHit) return { response: msgHit.body||msgHit.title, item: null, videoUrl: resolveVideoUrl(msgHit), matchedMessage: msgHit };
+    }
+
+    // Handle ITEM:
+    var extractedName = (tagLine && /^ITEM:/i.test(tagLine)) ? tagLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
     console.log('[AI] Parsed item:', extractedName, '| Response:', responseText);
 
     var aiMatch = extractedName.toLowerCase() !== 'none' ? matchMenuItem(extractedName, menu) : null;
