@@ -1097,31 +1097,10 @@ function matchMessage(question, messages) {
 // Smarter matching: word-boundary checks, noise guards, longest-phrase-wins.
 // ==========================================
 
-// Phrases that signal a browsing/category/ingredient question — block triggers
-const TRIGGER_NOISE_GUARDS = [
-  'anything with','dishes with','items with','do you have anything with',
-  'what has','what contains',
-  'show me all','show me the menu','full menu','whole menu','all items',
-  'what are your','what kind of','what types of',
-  'what is on the menu','what do you have on','everything on the menu',
-];
-
-// Word-boundary match: single-word phrases require real boundaries so
-// "burger" doesn't match inside "hamburger" or "I'm not a chicken"
-function triggerPhraseMatches(phrase, q) {
-  // Multi-word phrases: substring match is specific enough
-  if (phrase.indexOf(" ") !== -1) return q.indexOf(phrase) !== -1;
-  // Single word: pad both sides with spaces for boundary check
-  var padded = " " + q + " ";
-  var p1 = " " + phrase + " ";
-  var p2 = " " + phrase + ",";
-  var p3 = " " + phrase + ".";
-  var p4 = " " + phrase + "?";
-  var p5 = " " + phrase + "!";
-  return padded.indexOf(p1) !== -1 || padded.indexOf(p2) !== -1 ||
-         padded.indexOf(p3) !== -1 || padded.indexOf(p4) !== -1 ||
-         padded.indexOf(p5) !== -1;
-}
+// ==========================================
+// TRIGGER MATCHING -- simple and reliable
+// Longest keyword match wins. No noise guards, no regex.
+// ==========================================
 
 
 // ==========================================
@@ -1171,56 +1150,45 @@ function matchCarouselTrigger(question, menu) {
 
 function matchAnyMenuTrigger(question, menu) {
   if (!menu || !menu.length) return null;
-  const q = question.toLowerCase().trim();
+  // Strip punctuation, lowercase
+  var q = question.toLowerCase().replace(/[?!.,;:]/g, '').trim();
 
-  // If it sounds like a browsing question, don't hijack it with a trigger
-  if (TRIGGER_NOISE_GUARDS.some(g => q.includes(g))) {
-    console.log('[Trigger] Noise guard blocked:', q);
-    return null;
-  }
+  var bestMatch = null;
+  var bestLen = 0;
 
-  let bestMatch = null;
-  let bestWordCount = 0;
-
-  for (const item of menu) {
+  for (var mi = 0; mi < menu.length; mi++) {
+    var item = menu[mi];
     if (!item.visible) continue;
 
-    const allTriggers = [];
+    var allTriggers = [];
     if (item.triggers && item.triggers.length) {
-      for (const tr of item.triggers) {
+      for (var ti = 0; ti < item.triggers.length; ti++) {
+        var tr = item.triggers[ti];
         if (!tr.keywords) continue;
-        tr.keywords.split(',').map(function(p){return p.trim().toLowerCase();}).filter(Boolean).forEach(function(phrase){
-          allTriggers.push({phrase:phrase, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
+        tr.keywords.split(',').forEach(function(p){
+          var kw = p.trim().toLowerCase();
+          if (kw) allTriggers.push({phrase:kw, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
         });
       }
     }
     if (item.triggerKeywords) {
-      item.triggerKeywords.split(',').map(function(p){return p.trim().toLowerCase();}).filter(Boolean).forEach(function(phrase){
-        allTriggers.push({phrase:phrase, type:item.triggerType||'item-request', videoFilename:''});
+      item.triggerKeywords.split(',').forEach(function(p){
+        var kw = p.trim().toLowerCase();
+        if (kw) allTriggers.push({phrase:kw, type:item.triggerType||'item-request', videoFilename:''});
       });
     }
 
-    for (let ti=0; ti<allTriggers.length; ti++) {
-      const t = allTriggers[ti];
-      if (!t.phrase) continue;
-      if (!triggerPhraseMatches(t.phrase, q)) continue;
-      const wordCount = t.phrase.split(/\s+/).length;
-      // Skip single-word triggers that are 3 chars or less — too collision-prone
-      if (wordCount === 1 && t.phrase.length <= 3) continue;
-      console.log('[Trigger] Candidate:', t.phrase, '| words:', wordCount, '| item:', item.name);
-      // Longer phrase wins (most specific match)
-      if (wordCount > bestWordCount) {
-        bestWordCount = wordCount;
+    for (var ki = 0; ki < allTriggers.length; ki++) {
+      var t = allTriggers[ki];
+      if (!t.phrase || t.phrase.length <= bestLen) continue;
+      if (q.indexOf(t.phrase) !== -1) {
+        console.log('[Trigger] Match:', t.phrase, '->', item.name);
+        bestLen = t.phrase.length;
         bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
       }
     }
   }
 
-  if (bestMatch) {
-    console.log('[Trigger] Winner:', bestMatch.phrase, '| item:', bestMatch.item.name);
-  } else {
-    console.log('[Trigger] No match for:', q);
-  }
   return bestMatch;
 }
 function matchFAQ(question, faq) {
@@ -1250,47 +1218,35 @@ function matchFAQ(question, faq) {
 // ==========================================
 function matchMenuItemTrigger(question, item) {
   if (!item) return null;
-  const q = question.toLowerCase().trim();
+  var q = question.toLowerCase().replace(/[?!.,;:]/g, '').trim();
+  var bestMatch = null;
+  var bestLen = 0;
 
-  // Same noise guard — don't let context triggers fire on browsing questions
-  if (TRIGGER_NOISE_GUARDS.some(g => q.includes(g))) return null;
-
-  let bestMatch = null;
-  let bestPhraseLen = 0;
-
-  const triggersArr = item.triggers && item.triggers.length ? item.triggers : null;
-  if (triggersArr) {
-    for (const tr of triggersArr) {
-      if (!tr.keywords) continue;
-      const phrases = tr.keywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
-      for (const phrase of phrases) {
-        if (!phrase || phrase.length <= bestPhraseLen) continue;
-        if (phrase.split(/\s+/).length === 1 && phrase.length <= 3) continue; // skip tiny words
-        if (triggerPhraseMatches(phrase, q)) {
-          bestPhraseLen = phrase.length;
-          bestMatch = { item, phrase, type: tr.action || 'item-request', videoFilename: tr.videoFilename || '' };
-        }
-      }
-    }
-    if (bestMatch) {
-      console.log('[Multi-trigger] Matched:', bestMatch.phrase, '| action:', bestMatch.type, '| item:', item.name);
-      return bestMatch;
-    }
-    return null;
+  var allKws = [];
+  if (item.triggers && item.triggers.length) {
+    item.triggers.forEach(function(tr){
+      if (!tr.keywords) return;
+      tr.keywords.split(',').forEach(function(p){
+        var kw = p.trim().toLowerCase();
+        if (kw) allKws.push({phrase:kw, type:tr.action||'item-request', videoFilename:tr.videoFilename||''});
+      });
+    });
+  }
+  if (item.triggerKeywords) {
+    item.triggerKeywords.split(',').forEach(function(p){
+      var kw = p.trim().toLowerCase();
+      if (kw) allKws.push({phrase:kw, type:item.triggerType||'item-request', videoFilename:''});
+    });
   }
 
-  // Legacy fallback: flat triggerKeywords / triggerType
-  if (!item.triggerKeywords) return null;
-  const phrases = item.triggerKeywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
-  for (const phrase of phrases) {
-    if (!phrase || phrase.length <= bestPhraseLen) continue;
-    if (phrase.split(/\s+/).length === 1 && phrase.length <= 3) continue;
-    if (triggerPhraseMatches(phrase, q)) {
-      bestPhraseLen = phrase.length;
-      bestMatch = { item, phrase, type: item.triggerType || 'item-request', videoFilename: '' };
+  allKws.forEach(function(t){
+    if (t.phrase.length > bestLen && q.indexOf(t.phrase) !== -1) {
+      bestLen = t.phrase.length;
+      bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
     }
-  }
-  if (bestMatch) console.log('[Menu Trigger] Legacy matched:', bestMatch.phrase, '| item:', item.name);
+  });
+
+  if (bestMatch) console.log('[Trigger] Item match:', bestMatch.phrase, '->', item.name);
   return bestMatch;
 }
 // Resolve which video to play for a matched trigger.
