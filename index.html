@@ -946,29 +946,38 @@ function matchCategory(question, menu) {
 // ==========================================
 function resolveVideoUrl(item) {
   if (!item) return '';
+  console.log('[Video] Resolving for:', item.name, '| videoUrl:', (item.videoUrl||'').substring(0,60), '| videoFilename:', item.videoFilename||'none');
   // 1. Direct blob/data URL uploaded from phone
-  if (item.videoUrl && item.videoUrl.startsWith('data:')) return item.videoUrl;
+  if (item.videoUrl && item.videoUrl.startsWith('data:')) {
+    console.log('[Video] Using local blob data URL');
+    return item.videoUrl;
+  }
   // 2. Already a full https URL
-  if (item.videoUrl && item.videoUrl.startsWith('http')) return item.videoUrl;
-  // 3. Filename → try Supabase public URL first
+  if (item.videoUrl && item.videoUrl.startsWith('http')) {
+    console.log('[Video] Using direct https URL:', item.videoUrl.substring(0,80));
+    return item.videoUrl;
+  }
+  // 3. Filename → Supabase public URL
   const filename = item.videoFilename || (item.videoUrl && !item.videoUrl.startsWith('data:') ? item.videoUrl : '');
   if (filename) {
     const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
     const sbBucket = store.get('stellas_sb_bucket','videos');
     if (sbUrl) {
-      const url = `${sbUrl}/storage/v1/object/public/${sbBucket}/${filename}`;
-      console.log('[Storage] Resolved via Supabase:', url);
+      const url = sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+filename;
+      console.log('[Video] Supabase URL:', url);
       return url;
     }
-    // 4. Fallback to R2 base URL
+    // 4. R2 fallback
     const r2Base = store.get('stellas_r2_base','').replace(/\/$/,'');
     if (r2Base) {
-      const url = `${r2Base}/${filename}`;
-      console.log('[Storage] Resolved via R2:', url);
+      const url = r2Base+'/'+filename;
+      console.log('[Video] R2 URL:', url);
       return url;
     }
+    console.warn('[Video] Has filename but no storage URL configured:', filename);
   }
-  return item.videoUrl || '';
+  console.warn('[Video] No video found for:', item.name);
+  return '';
 }
 
 // ==========================================
@@ -2167,6 +2176,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
   useEffect(()=>{
     const v = videoRef.current;
     if(!v) return;
+    console.log('[AvatarDisplay] playUrl received:', playUrl ? playUrl.substring(0,80) : 'EMPTY');
     if(!playUrl){
       v.pause(); v.currentTime=0;
       setEnded(false); setVideoErr(false);
@@ -2242,53 +2252,44 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
 
   const replayBtn = playUrl && (ended||videoErr) && h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again');
 
-  // -- No video: show idle static image --
-  if(!playUrl){
-    const imgSrc = staticImgSrc || posterUrl || '';
-    return h('div',{className:'avatar-frame',style:{height,position:'relative',boxShadow:active?'0 0 40px rgba(201,168,76,.5),var(--shadow-glow)':'var(--shadow-glow)'}},
-      imgSrc
-        ? h('img',{src:imgSrc,alt:'Anna',className:'idle-breathe',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
-        : h('div',{style:{width:'100%',height:'100%',background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
-            h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')),
-      active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
-      h('div',{className:'sparkle-overlay'}),nameTag
-    );
-  }
+  // Always render the same JSX structure so React never remounts the <video> element.
+  // Show/hide poster image over the video depending on state.
+  const imgSrc = staticImgSrc || posterUrl || '';
+  const showPoster = !playUrl || (ended && !idleAfter);
+  const showIdleImg = (!playUrl) || (ended && idleAfter);
 
-  // -- After confirm video ends: idle breathe with item thumbnail --
-  if(ended && idleAfter){
-    const idleSrc = staticImgSrc || posterUrl || '';
-    return h('div',{className:'avatar-frame',style:{height,position:'relative',boxShadow:active?'0 0 40px rgba(201,168,76,.5),var(--shadow-glow)':'var(--shadow-glow)'}},
-      idleSrc
-        ? h('img',{src:idleSrc,alt:'Anna',className:'idle-breathe',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
-        : h('div',{style:{width:'100%',height:'100%',background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
-            h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')),
-      sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}})),
-      h('div',{className:'sparkle-overlay'}),
-      h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again'),
-      nameTag
-    );
-  }
-
-  // -- Video playing --
   return h('div',{className:'avatar-video-wrap',style:{height}},
-    // The <video> element stays in this JSX subtree -- never moved/reparented
+    // Video element is ALWAYS mounted — changing src triggers playback, never remounts
     h('video',{
       ref:videoRef,
-      src:playUrl,
-      autoPlay:true,playsInline:true,muted:true,loop:effectiveLoop,
-      'webkit-playsinline':'','x-webkit-airplay':'deny',
-      disablePictureInPicture:true,disableRemotePlayback:true,
-      style:{width:'100%',height:'100%',display:'block',objectFit:'cover',objectPosition:'top center',
-        pointerEvents:'none',opacity:(ended&&!idleAfter)?0:1,transition:'opacity .4s ease'},
+      autoPlay:true, playsInline:true, muted:true, loop:effectiveLoop,
+      'webkit-playsinline':'', 'x-webkit-airplay':'deny',
+      disablePictureInPicture:true, disableRemotePlayback:true,
+      style:{
+        width:'100%', height:'100%', display:'block',
+        objectFit:'cover', objectPosition:'top center',
+        pointerEvents:'none',
+        opacity: (!playUrl || ended) ? 0 : 1,
+        transition:'opacity .4s ease'
+      },
       onEnded:()=>{ setEnded(true); if(onEnded)onEnded(); },
-      onError:()=>{ console.warn('[Video] Error loading:', playUrl.split('/').pop()); setVideoErr(true); },
+      onError:()=>{ console.warn('[Video] Error loading:', (playUrl||'').split('/').pop()); setVideoErr(true); },
     }),
-    // Flat poster after regular (non-idle) video ends
-    ended&&!idleAfter&&(posterUrl||staticImgSrc)&&h('div',{style:{position:'absolute',inset:0,zIndex:1}},
-      h('img',{src:posterUrl||staticImgSrc,alt:'poster',style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}})
+    // Poster/idle image layered on top when no video or video ended
+    (showPoster || showIdleImg) && imgSrc && h('div',{style:{position:'absolute',inset:0,zIndex:1}},
+      h('img',{
+        src:imgSrc, alt:'Anna',
+        className: (!playUrl || (ended && idleAfter)) ? 'idle-breathe' : '',
+        style:{width:'100%',height:'100%',objectFit:'cover',objectPosition:'top center',display:'block'}
+      })
     ),
-    volControl,replayBtn,nameTag,
+    // Fallback when no image either
+    (showPoster || showIdleImg) && !imgSrc && h('div',{style:{position:'absolute',inset:0,zIndex:1,background:'linear-gradient(180deg,var(--green),var(--green2))',display:'flex',alignItems:'center',justifyContent:'center'}},
+      h('div',{style:{color:'var(--gold2)',fontSize:48,opacity:.4}},'✦')
+    ),
+    // Replay button
+    playUrl && (ended||videoErr) && h('button',{onClick:replay,style:{...pillBtn,position:'absolute',top:14,right:14,zIndex:4}},'↺ Play again'),
+    volControl, nameTag,
     active&&sparks.map(([l,d],i)=>h('div',{key:i,className:'sp',style:{left:`${l}%`,bottom:`${10+i*7}%`,width:4,height:4,animationDelay:`${d}s`}}))
   );
 }
@@ -2584,8 +2585,12 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
   const hasItem = !!item;
   const hasVideo = !!videoUrl;
   const hasCarousel = !!(carouselItems&&carouselItems.length>0);
-  const fallback = ordered ? '' : ((hasItem||hasVideo) ? (welcomeVideoUrl||'') : '');
-  const idleImg = ordered ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '') : (item?.imgUrl || welcomeImgSrc || '');
+  // Only use welcome video as fallback when we have NO specific item (general response)
+  // When we have an item but no video, show the item's photo — not the welcome video
+  const fallback = ordered ? '' : (!hasItem && !hasVideo ? (welcomeVideoUrl||'') : '');
+  const idleImg = ordered
+    ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '')
+    : (item?.imgUrl || welcomeImgSrc || '');
 
   return h('div',{className:'main-scroll fade-in'},
 
@@ -2595,11 +2600,15 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
         ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
         : h(AvatarDisplay,{
             videoUrl: hasCarousel ? (welcomeVideoUrl||'') : (videoUrl||''),
-            posterUrl:idleImg,
+            posterUrl: idleImg,
             fallbackVideoUrl: hasCarousel ? '' : fallback,
-            staticImgSrc:welcomeImgSrc||idleImg,
+            // No video + has item → show item food photo full frame
+            // No video + no item → show Anna's welcome image
+            staticImgSrc: (!videoUrl && !fallback && hasItem && item.imgUrl)
+              ? item.imgUrl
+              : (welcomeImgSrc || idleImg),
             height:'100%',
-            active: hasCarousel ? false : hasItem,
+            active: hasCarousel ? false : (hasItem && hasVideo),
             loop: hasCarousel ? true : false,
             idleAfter:ordered,
             hideNameTag:hasCarousel,
