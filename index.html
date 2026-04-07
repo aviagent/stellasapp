@@ -772,26 +772,31 @@ function matchMenuItem(rawName, menu) {
   if (!rawName || rawName.toLowerCase() === 'none') return null;
   const q = rawName.toLowerCase().trim();
   const items = menu.filter(i => i.visible);
+  // Exact
   let hit = items.find(i => i.name.toLowerCase() === q); if (hit) return hit;
+  // Name contains query
   hit = items.find(i => i.name.toLowerCase().includes(q)); if (hit) return hit;
+  // Query contains name
   hit = items.find(i => q.includes(i.name.toLowerCase())); if (hit) return hit;
-  const qWords = q.split(/\s+/).filter(w => w.length > 2);
-  if (!qWords.length) return null;
-  let bestScore = 0, bestItem = null;
+  // Scored: name(5) + any field(2) + stem partial(1)
+  const qW = q.split(/\s+/).filter(w => w.length > 2);
+  if (!qW.length) return null;
+  let best = 0, bestIt = null;
   for (const item of items) {
-    const nameL = item.name.toLowerCase();
-    const hay = [nameL,(item.desc||'').toLowerCase(),(item.ing||'').toLowerCase(),(item.cat||'').toLowerCase(),(item.triggerKeywords||'').toLowerCase()].join(' ');
-    const hayW = hay.split(/\s+/);
-    let score = 0;
-    for (const w of qWords) {
-      if (nameL.includes(w)) { score += 5; continue; }
-      if (hay.includes(w))   { score += 2; continue; }
-      for (const hw of hayW) { if (hw.length>3&&w.length>3&&(hw.includes(w)||w.includes(hw))){ score+=1; break; } }
+    const nl = item.name.toLowerCase();
+    const hay = [nl,(item.desc||'').toLowerCase(),(item.ing||'').toLowerCase(),(item.cat||'').toLowerCase(),(item.triggerKeywords||'').toLowerCase()].join(' ');
+    const hw = hay.split(/\s+/);
+    let sc = 0;
+    for (const w of qW) {
+      if (nl.includes(w)) { sc += 5; continue; }
+      if (hay.includes(w)) { sc += 2; continue; }
+      for (const h of hw) { if (h.length>3&&w.length>3&&(h.includes(w)||w.includes(h))){ sc+=1; break; } }
     }
-    if (score > bestScore) { bestScore = score; bestItem = item; }
+    if (sc > best) { best = sc; bestIt = item; }
   }
-  return bestScore >= 1 ? bestItem : null;
+  return best >= 1 ? bestIt : null;
 }
+
 
 // ==========================================
 // INGREDIENT SEARCH -- returns ALL items matching an ingredient/keyword
@@ -801,6 +806,7 @@ function matchIngredient(question, menu) {
   return matchCategoryOrIngredient(question, menu);
 }
 
+
 // ==========================================
 // CATEGORY SEARCH -- "what are your desserts", "show me lunch", etc.
 // Returns matching items by category. Reuses the ingredient list card UI.
@@ -808,44 +814,47 @@ function matchIngredient(question, menu) {
 function matchCategoryOrIngredient(question, menu) {
   const q = question.toLowerCase().trim();
   const vis = menu.filter(i => i.visible);
-  const groupPhrases = ['what do you have','what have you got','show me','do you have any','what kind of','what types of','what are your',"what's your","what's on",'full menu','whole menu','everything','all items','dishes with','items with','anything with','what has','what contains','tell me about your','what can i get'];
+  const groupPhrases = ['what do you have','what have you got','show me','do you have any','what kind of','what types of','what are your',"what's your","what's on",'whats on','full menu','whole menu','everything','all items','dishes with','items with','anything with','what has','what contains','tell me about your','what can i get'];
   const hasGroup = groupPhrases.some(t => q.includes(t));
-  const dietary = {
+  // Dietary
+  const diet = {
     'vegan':       i => !/(chicken|beef|pork|fish|dairy|cheese|egg|butter|cream|milk|meat|shrimp|bacon)/i.test(i.ing||''),
     'vegetarian':  i => !/(chicken|beef|pork|fish|shrimp|bacon|meat)/i.test(i.ing||''),
     'gluten free': i => !/(gluten)/i.test(i.ing||''),
     'gluten-free': i => !/(gluten)/i.test(i.ing||''),
     'dairy free':  i => !/(cheese|butter|cream|milk|dairy)/i.test(i.ing||''),
   };
-  for (const [k,fn] of Object.entries(dietary)) {
+  for (const [k,fn] of Object.entries(diet)) {
     if (q.includes(k)) { const m=vis.filter(i=>fn(i)); if(m.length) return {matches:m,searchTerm:k}; }
   }
   if (q.includes('full menu')||q.includes('whole menu')||q.includes('everything')||q.includes('all items'))
     return { matches:vis, searchTerm:'the full menu' };
+  // Extract search term
   let term = q;
   groupPhrases.forEach(t => { term = term.replace(t,' '); });
   term = term.replace(/[?!.,]/g,'').replace(/\s+/g,' ').trim();
   const fillers = new Set(['the','and','for','our','you','can','get','are','any','some','have','please','want','like','just','tell','about']);
   const words = term.split(' ').filter(w => w.length>1 && !fillers.has(w));
   if (!words.length) return hasGroup ? {matches:vis,searchTerm:'menu'} : null;
+  // Score items
   const scored = vis.map(item => {
     const hay = [item.name,item.cat||'',item.desc||'',item.ing||'',item.triggerKeywords||''].join(' ').toLowerCase();
-    const hayW = hay.split(/\s+/);
+    const hw = hay.split(/\s+/);
     let sc = 0;
     for (const w of words) {
       if (item.name.toLowerCase().includes(w)) sc+=4;
       else if (hay.includes(w)) sc+=2;
-      for (const hw of hayW) { if(hw.length>2&&w.length>2&&hw!==w&&(hw.includes(w)||w.includes(hw))){ sc+=1; break; } }
+      for (const h of hw) { if(h.length>2&&w.length>2&&h!==w&&(h.includes(w)||w.includes(h))){ sc+=1; break; } }
     }
     return {item,sc};
   }).filter(x=>x.sc>0).sort((a,b)=>b.sc-a.sc);
-  if (scored.length>0 && (hasGroup||scored.length>=3))
-    return { matches:scored.map(x=>x.item), searchTerm:words.join(' ') };
-  if (scored.length===1 && hasGroup)
-    return { matches:scored.map(x=>x.item), searchTerm:words.join(' ') };
+  // Show carousel: group intent + matches, OR 3+ matches
+  if (scored.length>0&&(hasGroup||scored.length>=3)) return {matches:scored.map(x=>x.item),searchTerm:words.join(' ')};
+  if (scored.length===1&&hasGroup) return {matches:scored.map(x=>x.item),searchTerm:words.join(' ')};
   return null;
 }
 function matchCategory(question, menu) { return matchCategoryOrIngredient(question, menu); }
+
 
 // ==========================================
 // VIDEO URL RESOLVER
@@ -943,20 +952,20 @@ function matchMessage(question, messages) {
     if (m.scheduleEnd   && new Date(m.scheduleEnd)<now)   return false;
     return true;
   });
-  // Explicit triggers
+  // Priority 0: explicit trigger keywords
   for (const m of active) {
     if (!m.triggerKeywords) continue;
     const phrases = m.triggerKeywords.split(',').map(p=>p.trim().toLowerCase()).filter(Boolean);
     for (const ph of phrases) { if (ph && q.includes(ph)) { console.log('[Msg] trigger:',ph,'->',m.title); return m; } }
   }
-  // Goodbye
+  // Priority 1: goodbye
   if (['goodbye','bye','see you','see ya','have a good','leaving now','good night','good evening'].some(w=>q.includes(w))) {
     const m=active.find(m=>m.type==='goodbye'); if(m) return m;
   }
-  // Greeting — only pure greetings (not "hi what burgers do you have")
-  const pureGreeting = ['hi','hello','hey','good morning','howdy'].some(w=>q===w||q.startsWith(w+' ')&&q.split(' ').length<=4);
-  if (pureGreeting) { const m=active.find(m=>m.type==='welcome'); if(m) return m; }
-  // Promos
+  // Priority 2: greeting — only pure short greetings, not "hi what burgers do you have"
+  const isJustGreeting = ['hi','hello','hey','good morning','howdy'].some(w=>q===w||(q.startsWith(w+' ')&&q.split(' ').length<=4));
+  if (isJustGreeting) { const m=active.find(m=>m.type==='welcome'); if(m) return m; }
+  // Priority 3: promos/specials
   if (['special','specials','promo','deal','offer','happy hour','discount',"what's on",'today','tonight'].some(w=>q.includes(w))) {
     const promos=active.filter(m=>['promo','announcement','seasonal','event'].includes(m.type));
     if (promos.length) {
@@ -964,7 +973,7 @@ function matchMessage(question, messages) {
       return sc[0].s>0?sc[0].m:promos[0];
     }
   }
-  // Scored scan — high threshold to avoid false positives on menu questions
+  // Priority 4: scored scan — high threshold to avoid false positives on menu questions
   const qW=q.split(/\s+/).filter(w=>w.length>3);
   if (!qW.length) return null;
   let best=null,bestSc=0;
@@ -976,6 +985,7 @@ function matchMessage(question, messages) {
   if (best && bestSc>=Math.min(3,qW.length)) return best;
   return null;
 }
+
 
 // ==========================================
 // GLOBAL MENU TRIGGER SCANNER
@@ -1219,7 +1229,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
     return { response:msgMatch.body||msgMatch.title, item:null, videoUrl:resolveVideoUrl(msgMatch), matchedMessage:msgMatch };
   }
 
-  // Step 2: Local item match
+  // Step 2: Quick local item match
   const quickMatch = matchMenuItem(question, menu);
   console.log('[AI] Quick match:', quickMatch?quickMatch.name:'none');
 
@@ -1230,8 +1240,8 @@ async function askAI(question, menu, messages, tableNum, faq) {
     return { response:"Here's what we have for "+groupResult.searchTerm+"!", item:null, videoUrl:'', ingredientMatches:groupResult.matches, searchTerm:groupResult.searchTerm };
   }
 
-  // Step 4: AI with full rich data
-  const richMenuList = items.map((it,n) => {
+  // Step 4: AI call with full rich menu + messages data
+  const richMenu = items.map((it,n) => {
     const p=[(n+1)+'. '+it.name];
     if(it.price)p.push('$'+it.price);
     if(it.cat)p.push(it.cat);
@@ -1245,20 +1255,20 @@ async function askAI(question, menu, messages, tableNum, faq) {
 
   const systemPrompt = [
     "You are Anna, a warm host at Stella's restaurant.",
-    'Guest: "'+question+'"',
+    'Guest said: "'+question+'"',
     '',
-    'MENU (name|price|cat|desc|ingredients|aka):',
-    richMenuList,
+    'MENU (name | price | category | description | ingredients | aka):',
+    richMenu,
     '',
-    'MESSAGES (specials/greetings/goodbye/FAQs):',
+    'MESSAGES (greetings/specials/goodbye/order-confirmed/FAQs):',
     msgStr,
     '',
-    'Match using ALL fields. Last line ONLY:',
-    '  CATEGORY:[group] — asking about a group (desserts, drinks, chicken, burgers, etc)',
-    '  MSG:[title] — a message fits best (greeting, special, goodbye)',
-    '  ITEM:[exact name] — specific item',
-    '  ITEM:none — nothing matches',
-    'Write 1-2 warm sentences first, then the tag.',
+    'Match loosely using ALL fields. Last line ONLY one of:',
+    '  CATEGORY:[word] — guest asking about a group (desserts, drinks, chicken, burgers, sandwiches)',
+    '  MSG:[exact title] — a preset message fits (greeting, special, goodbye)',
+    '  ITEM:[exact name] — a specific menu item fits',
+    '  ITEM:none — nothing fits',
+    'Write 1-2 warm sentences first, tag on very last line, nothing after.',
     langInstruction,
   ].join('\n');
 
@@ -1278,7 +1288,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
 
     const allL=rawText.split('\n').map(l=>l.trim()).filter(Boolean);
     const tagL=allL.find(l=>/^(ITEM:|MSG:|CATEGORY:)/i.test(l));
-    const reply=allL.filter(l=>!/^(ITEM:|MSG:|CATEGORY:)/i.test(l)).join(' ').trim()||'Let me help!';
+    const reply=allL.filter(l=>!/^(ITEM:|MSG:|CATEGORY:)/i.test(l)).join(' ').trim()||"Let me help with that!";
 
     if(tagL&&/^CATEGORY:/i.test(tagL)){
       const cat=tagL.replace(/^CATEGORY:\s*/i,'').trim();
@@ -1296,12 +1306,12 @@ async function askAI(question, menu, messages, tableNum, faq) {
     const aiMatch=exName.toLowerCase()!=='none'?matchMenuItem(exName,menu):null;
     const item=aiMatch||quickMatch||null;
     const videoUrl=resolveVideoUrl(item);
-    console.log('[AI] Final:',item?item.name:'none','video:',videoUrl||'none');
+    console.log('[AI] Final:',item?item.name:'none','| video:',videoUrl||'none');
 
     if(!item){
       const faqMatch=matchFAQ(question,faq);
       if(faqMatch){
-        const fp="You are Anna, host at Stella's. Guest: \""+question+"\". Info: \""+faqMatch.title+': '+faqMatch.body+"\". Reply warmly in 1-2 sentences."+langInstruction;
+        const fp="You are Anna, host at Stella's. Guest: \""+question+"\". Info: \""+faqMatch.title+': '+faqMatch.body+"\". Reply warmly in 1-2 sentences. Output ONLY the reply."+langInstruction;
         try{
           var fr,fd,fr2='';
           if(cfg.format==='anthropic'){fr=await fetch(cfg.baseUrl,{method:'POST',headers:{'x-api-key':apiKey,'anthropic-version':'2023-06-01','content-type':'application/json','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:cfg.model,max_tokens:150,system:fp,messages:[{role:'user',content:question}]})});fd=await fr.json();fr2=(fd.content&&fd.content[0]&&fd.content[0].text)||'';}
@@ -1309,13 +1319,13 @@ async function askAI(question, menu, messages, tableNum, faq) {
           return{response:fr2.trim()||faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};
         }catch(fe){return{response:faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};}
       }
-      return{response:reply||"I'm not sure — browse the menu or ask me about any dish!",item:null,videoUrl:''};
+      return{response:reply||"I'm not sure — feel free to browse the menu or ask me about any dish!",item:null,videoUrl:''};
     }
     return{response:reply,item,videoUrl};
-  } catch(err){
+  }catch(err){
     console.error('[AI] Failed:',err);
-    if(quickMatch)return{response:quickMatch.name+' is great! '+(quickMatch.desc||'').split('.')[0]+'.',item:quickMatch,videoUrl:resolveVideoUrl(quickMatch)};
-    return{response:"I'm not sure — ask me about anything on the menu!",item:null,videoUrl:''};
+    if(quickMatch)return{response:quickMatch.name+' is a great choice! '+(quickMatch.desc||'').split('.')[0]+'.',item:quickMatch,videoUrl:resolveVideoUrl(quickMatch)};
+    return{response:"I'm not sure about that one — ask me about anything on the menu!",item:null,videoUrl:''};
   }
 }
 
