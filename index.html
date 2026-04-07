@@ -770,119 +770,210 @@ function FilePicker({label,accept,value,onChange,icon}){
 // ==========================================
 function matchMenuItem(rawName, menu) {
   if (!rawName || rawName.toLowerCase() === 'none') return null;
-  var q = rawName.toLowerCase().trim();
-  var items = menu.filter(function(i){ return i.visible; });
-
-  // 1. Exact name
-  var hit = items.find(function(i){ return i.name.toLowerCase() === q; });
-  if (hit) return hit;
-
-  // 2. Name contains query or query contains name
-  hit = items.find(function(i){ return i.name.toLowerCase().includes(q); });
-  if (hit) return hit;
-  hit = items.find(function(i){ return q.includes(i.name.toLowerCase()); });
-  if (hit) return hit;
-
-  // 3. Score every item across ALL fields — name, desc, ingredients, category, triggers
-  var qWords = q.split(/\s+/).filter(function(w){ return w.length > 2; });
-  var bestScore = 0, bestItem = null;
-  for (var ii = 0; ii < items.length; ii++) {
-    var item = items[ii];
-    var name = item.name.toLowerCase();
-    var hay = [name, (item.desc||'').toLowerCase(), (item.ing||'').toLowerCase(),
-               (item.cat||'').toLowerCase(), (item.triggerKeywords||'').toLowerCase()].join(' ');
-    var score = 0;
-    for (var wi = 0; wi < qWords.length; wi++) {
-      var word = qWords[wi];
-      if (name.includes(word)) score += 4;
-      else if (hay.includes(word)) score += 2;
-      // stem: "burger"↔"cheeseburger", "chicken"↔"chicken wings"
-      if (word.length > 3) {
-        var hayWords = hay.split(/\s+/);
-        for (var hi = 0; hi < hayWords.length; hi++) {
-          var hw = hayWords[hi];
-          if (hw.length > 3 && (hw.includes(word) || word.includes(hw))) score += 1;
-        }
-      }
+  const q = rawName.toLowerCase().trim();
+  const items = menu.filter(i => i.visible);
+  let hit = items.find(i => i.name.toLowerCase() === q); if (hit) return hit;
+  hit = items.find(i => i.name.toLowerCase().includes(q)); if (hit) return hit;
+  hit = items.find(i => q.includes(i.name.toLowerCase())); if (hit) return hit;
+  const qWords = q.split(/\s+/).filter(w => w.length > 2);
+  if (!qWords.length) return null;
+  let bestScore = 0, bestItem = null;
+  for (const item of items) {
+    const nameL = item.name.toLowerCase();
+    const hay = [nameL,(item.desc||'').toLowerCase(),(item.ing||'').toLowerCase(),(item.cat||'').toLowerCase(),(item.triggerKeywords||'').toLowerCase()].join(' ');
+    const hayW = hay.split(/\s+/);
+    let score = 0;
+    for (const w of qWords) {
+      if (nameL.includes(w)) { score += 5; continue; }
+      if (hay.includes(w))   { score += 2; continue; }
+      for (const hw of hayW) { if (hw.length>3&&w.length>3&&(hw.includes(w)||w.includes(hw))){ score+=1; break; } }
     }
     if (score > bestScore) { bestScore = score; bestItem = item; }
   }
-  if (bestScore >= 2) return bestItem;
-  return null;
+  return bestScore >= 1 ? bestItem : null;
 }
 
+// ==========================================
+// INGREDIENT SEARCH -- returns ALL items matching an ingredient/keyword
+// Used when user asks "dishes with spinach", "anything with parmesan" etc
+// ==========================================
+function matchIngredient(question, menu) {
+  return matchCategoryOrIngredient(question, menu);
+}
 
+// ==========================================
+// CATEGORY SEARCH -- "what are your desserts", "show me lunch", etc.
+// Returns matching items by category. Reuses the ingredient list card UI.
+// ==========================================
+function matchCategoryOrIngredient(question, menu) {
+  const q = question.toLowerCase().trim();
+  const vis = menu.filter(i => i.visible);
+  const groupPhrases = ['what do you have','what have you got','show me','do you have any','what kind of','what types of','what are your',"what's your","what's on",'full menu','whole menu','everything','all items','dishes with','items with','anything with','what has','what contains','tell me about your','what can i get'];
+  const hasGroup = groupPhrases.some(t => q.includes(t));
+  const dietary = {
+    'vegan':       i => !/(chicken|beef|pork|fish|dairy|cheese|egg|butter|cream|milk|meat|shrimp|bacon)/i.test(i.ing||''),
+    'vegetarian':  i => !/(chicken|beef|pork|fish|shrimp|bacon|meat)/i.test(i.ing||''),
+    'gluten free': i => !/(gluten)/i.test(i.ing||''),
+    'gluten-free': i => !/(gluten)/i.test(i.ing||''),
+    'dairy free':  i => !/(cheese|butter|cream|milk|dairy)/i.test(i.ing||''),
+  };
+  for (const [k,fn] of Object.entries(dietary)) {
+    if (q.includes(k)) { const m=vis.filter(i=>fn(i)); if(m.length) return {matches:m,searchTerm:k}; }
+  }
+  if (q.includes('full menu')||q.includes('whole menu')||q.includes('everything')||q.includes('all items'))
+    return { matches:vis, searchTerm:'the full menu' };
+  let term = q;
+  groupPhrases.forEach(t => { term = term.replace(t,' '); });
+  term = term.replace(/[?!.,]/g,'').replace(/\s+/g,' ').trim();
+  const fillers = new Set(['the','and','for','our','you','can','get','are','any','some','have','please','want','like','just','tell','about']);
+  const words = term.split(' ').filter(w => w.length>1 && !fillers.has(w));
+  if (!words.length) return hasGroup ? {matches:vis,searchTerm:'menu'} : null;
+  const scored = vis.map(item => {
+    const hay = [item.name,item.cat||'',item.desc||'',item.ing||'',item.triggerKeywords||''].join(' ').toLowerCase();
+    const hayW = hay.split(/\s+/);
+    let sc = 0;
+    for (const w of words) {
+      if (item.name.toLowerCase().includes(w)) sc+=4;
+      else if (hay.includes(w)) sc+=2;
+      for (const hw of hayW) { if(hw.length>2&&w.length>2&&hw!==w&&(hw.includes(w)||w.includes(hw))){ sc+=1; break; } }
+    }
+    return {item,sc};
+  }).filter(x=>x.sc>0).sort((a,b)=>b.sc-a.sc);
+  if (scored.length>0 && (hasGroup||scored.length>=3))
+    return { matches:scored.map(x=>x.item), searchTerm:words.join(' ') };
+  if (scored.length===1 && hasGroup)
+    return { matches:scored.map(x=>x.item), searchTerm:words.join(' ') };
+  return null;
+}
+function matchCategory(question, menu) { return matchCategoryOrIngredient(question, menu); }
+
+// ==========================================
+// VIDEO URL RESOLVER
+// ==========================================
+function resolveVideoUrl(item) {
+  if (!item) return '';
+  // 1. Direct blob/data URL uploaded from phone
+  if (item.videoUrl && item.videoUrl.startsWith('data:')) return item.videoUrl;
+  // 2. Already a full https URL
+  if (item.videoUrl && item.videoUrl.startsWith('http')) return item.videoUrl;
+  // 3. Filename → try Supabase public URL first
+  const filename = item.videoFilename || (item.videoUrl && !item.videoUrl.startsWith('data:') ? item.videoUrl : '');
+  if (filename) {
+    const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
+    const sbBucket = store.get('stellas_sb_bucket','videos');
+    if (sbUrl) {
+      const url = `${sbUrl}/storage/v1/object/public/${sbBucket}/${filename}`;
+      console.log('[Storage] Resolved via Supabase:', url);
+      return url;
+    }
+    // 4. Fallback to R2 base URL
+    const r2Base = store.get('stellas_r2_base','').replace(/\/$/,'');
+    if (r2Base) {
+      const url = `${r2Base}/${filename}`;
+      console.log('[Storage] Resolved via R2:', url);
+      return url;
+    }
+  }
+  return item.videoUrl || '';
+}
+
+// ==========================================
+// DETECT ORDER INTENT -- flexible, no exact phrases needed
+// Scores the input across action verbs + context signals
+// ==========================================
+function detectOrderIntent(question) {
+  const q = question.toLowerCase();
+
+  // Action verb families -- any single word signals possible order
+  const actionVerbs = ['order','add','get','have','want','like','bring','send','put','throw','grab','take','give','serve'];
+  // Context signals -- table/order context words
+  const contextWords = ['table','order','my order','cart','please','now','tonight','us','me','in','this','that'];
+  // Intensifiers that alone suggest ordering with a pronoun
+  const pronounOrder = ['another','more','one more','same again','again','second','third','extra'];
+
+  const hasAction = actionVerbs.some(w => q.split(/\b/).includes(w));
+  const hasContext = contextWords.some(w => q.includes(w));
+  const hasPronoun = pronounOrder.some(w => q.includes(w));
+
+  // "throw in the X", "can I get X", "I'd like X at my table" etc -- action + context
+  if (hasAction && hasContext) return true;
+  // "another X please", "one more X" etc -- pronoun alone is enough
+  if (hasPronoun) return true;
+  // Direct imperative: starts with action verb
+  if (actionVerbs.some(w => q.trimStart().startsWith(w))) return true;
+
+  return false;
+}
+
+// Context phrases -- "add this", "order this", "can I get that" -- no item name needed
+function detectContextPhrase(question) {
+  const q = question.toLowerCase();
+  const contextPhrases = [
+    // "this" phrases
+    'add this','order this','get this','want this','have this','i\'ll take this','this one',
+    'can i order this','can i get this','can you add this','put this in',
+    'i\'d like this','i want this','throw this in','yes this','this please',
+    // "that" phrases
+    'add that','order that','get that','want that','that one','i\'ll have that',
+    'can i order that','can i get that','can you add that','put that in',
+    'i\'d like that','i want that','throw that in','yes that','that please',
+    // "it" phrases -- most common spoken form
+    'add it','order it','get it','want it','i\'ll have it','i\'ll take it',
+    'can i order it','can i get it','can you add it','add it to my order',
+    'add it to my cart','add it to the order','put it in my order',
+    'bring it to my table','bring it to table','bring it over',
+    'i\'d like it','i want it','bring it','send it','get me it',
+    'order it for me','add it for me','yes add it','add it please',
+    'can i have it','i\'ll get it','i\'ll order it',
+    // "one" phrases
+    'add one','get one','order one','i\'ll take one','one please','yes one',
+    'another one','one more','add another',
+    // bare vague intent
+    'yes please','yeah add','yep add','yes i want','i want to order',
+    'can i order','i would like to order','i\'d like to order',
+  ];
+  return contextPhrases.some(p => q.includes(p));
+}
 function matchMessage(question, messages) {
   const q = question.toLowerCase().trim();
   const now = new Date();
-
   const active = messages.filter(m => {
     if (!m.active) return false;
-    if (m.scheduleStart && new Date(m.scheduleStart) > now) return false;
-    if (m.scheduleEnd && new Date(m.scheduleEnd) < now) return false;
+    if (m.scheduleStart && new Date(m.scheduleStart)>now) return false;
+    if (m.scheduleEnd   && new Date(m.scheduleEnd)<now)   return false;
     return true;
   });
-
-  // -- Priority 0: Explicit trigger keywords (highest priority) --
+  // Explicit triggers
   for (const m of active) {
     if (!m.triggerKeywords) continue;
-    const phrases = m.triggerKeywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
-    for (const phrase of phrases) {
-      if (phrase && q.includes(phrase)) {
-        console.log('[Messages] Keyword matched:', phrase, '| type:', m.type, '| title:', m.title);
-        return m;
-      }
+    const phrases = m.triggerKeywords.split(',').map(p=>p.trim().toLowerCase()).filter(Boolean);
+    for (const ph of phrases) { if (ph && q.includes(ph)) { console.log('[Msg] trigger:',ph,'->',m.title); return m; } }
+  }
+  // Goodbye
+  if (['goodbye','bye','see you','see ya','have a good','leaving now','good night','good evening'].some(w=>q.includes(w))) {
+    const m=active.find(m=>m.type==='goodbye'); if(m) return m;
+  }
+  // Greeting — only pure greetings (not "hi what burgers do you have")
+  const pureGreeting = ['hi','hello','hey','good morning','howdy'].some(w=>q===w||q.startsWith(w+' ')&&q.split(' ').length<=4);
+  if (pureGreeting) { const m=active.find(m=>m.type==='welcome'); if(m) return m; }
+  // Promos
+  if (['special','specials','promo','deal','offer','happy hour','discount',"what's on",'today','tonight'].some(w=>q.includes(w))) {
+    const promos=active.filter(m=>['promo','announcement','seasonal','event'].includes(m.type));
+    if (promos.length) {
+      const sc=promos.map(m=>({m,s:q.split(/\s+/).filter(w=>w.length>2&&(m.title+' '+m.body).toLowerCase().includes(w)).length})).sort((a,b)=>b.s-a.s);
+      return sc[0].s>0?sc[0].m:promos[0];
     }
   }
-
-  // -- Priority 1: Goodbye -- exact farewell phrases only --
-  const goodbyeWords = ['goodbye','bye','see you','see ya','have a good','leaving now','good night','good evening'];
-  if (goodbyeWords.some(w => q.includes(w))) {
-    const m = active.find(m => m.type === 'goodbye');
-    if (m) { console.log('[Messages] Goodbye triggered:', q, '\u2192', m.title); return m; }
+  // Scored scan — high threshold to avoid false positives on menu questions
+  const qW=q.split(/\s+/).filter(w=>w.length>3);
+  if (!qW.length) return null;
+  let best=null,bestSc=0;
+  for (const m of active) {
+    const hay=(m.title+' '+m.body+' '+(m.triggerKeywords||'')).toLowerCase();
+    const sc=qW.filter(w=>hay.includes(w)).length;
+    if(sc>bestSc){bestSc=sc;best=m;}
   }
-
-  // -- Priority 2: Greeting --
-  const greetWords = ['hello','hi','hey','good morning','howdy',"what's up",'how are you'];
-  if (greetWords.some(w => q.includes(w))) {
-    const m = active.find(m => m.type === 'welcome');
-    if (m) { console.log('[Messages] Matched by greeting \u2192 welcome:', m.title); return m; }
-  }
-
-  // -- Priority 3: Promo --
-  const promoWords = ['special','specials','promo','deal','offer','happy hour','discount','featured',"what's on",'today','tonight'];
-  if (promoWords.some(w => q.includes(w))) {
-    const promos = active.filter(m => ['promo','announcement','seasonal','event'].includes(m.type));
-    const scored = promos.map(m => {
-      const hay = (m.title + ' ' + m.body).toLowerCase();
-      const words = q.split(/\s+/).filter(w => w.length > 2);
-      const score = words.filter(w => hay.includes(w)).length;
-      return { m, score };
-    }).sort((a,b) => b.score - a.score);
-    if (scored.length && scored[0].score > 0) { console.log('[Messages] Matched promo:', scored[0].m.title); return scored[0].m; }
-    if (promos.length) { console.log('[Messages] Fallback promo:', promos[0].title); return promos[0]; }
-  }
-
-  // -- Priority 4: Scored scan across title + body + triggers + type --
-  var qWords = q.split(/\s+/).filter(function(w){ return w.length > 2; });
-  var best = null, bestScore = 0;
-  for (var mi = 0; mi < active.length; mi++) {
-    var m = active[mi];
-    var hay = (m.title+' '+m.body+' '+(m.type||'')+' '+(m.triggerKeywords||'')).toLowerCase();
-    var score = 0;
-    for (var wi = 0; wi < qWords.length; wi++) {
-      var word = qWords[wi];
-      if (hay.includes(word)) score += 2;
-      var hayWords = hay.split(/\s+/);
-      for (var hi = 0; hi < hayWords.length; hi++) {
-        var hw = hayWords[hi];
-        if (hw.length > 3 && word.length > 3 && (hw.includes(word)||word.includes(hw))) score += 1;
-      }
-    }
-    if (score > bestScore) { bestScore = score; best = m; }
-  }
-  if (best && bestScore >= 2) { console.log('[Messages] Scored match:', best.title, 'score', bestScore); return best; }
-
+  if (best && bestSc>=Math.min(3,qW.length)) return best;
   return null;
 }
 
@@ -1050,13 +1141,7 @@ async function askAI(question, menu, messages, tableNum, faq) {
     const quickMatch = matchMenuItem(question, menu);
     console.log('[AI] Order local fuzzy match:', quickMatch ? quickMatch.name : 'none');
 
-    const menuList = items.map(function(i, n){
-    var line = (n+1) + '. ' + i.name + ' | $' + i.price + ' | cat:' + (i.cat||'');
-    if (i.desc) line += ' | ' + i.desc;
-    if (i.ing)  line += ' | ingredients: ' + i.ing;
-    if (i.triggerKeywords) line += ' | also: ' + i.triggerKeywords;
-    return line;
-  }).join('\n');
+    const menuList = items.map(function(i, n){ return (n+1) + '. ' + i.name; }).join('\n');
     const orderPrompt = [
        'You are Anna, a friendly restaurant host at Stella\'s.',
       'A guest said: "' + question + '"',
@@ -1127,200 +1212,113 @@ async function askAI(question, menu, messages, tableNum, faq) {
     }
   }
 
-  // -- Step 1: Check all active Messages entries (non-order questions only) --
+  // Step 1: Messages (greetings, goodbye, specials, FAQs)
   const msgMatch = matchMessage(question, messages);
   if (msgMatch) {
-    console.log('[AI] Returning preset message:', msgMatch.title, '| Type:', msgMatch.type);
-    const vid = resolveVideoUrl(msgMatch);
-    console.log('[AI] Message video URL:', vid || 'none');
-    return {
-      response: msgMatch.body || msgMatch.title,
-      item: null,
-      videoUrl: vid,
-      matchedMessage: msgMatch,
-    };
+    console.log('[AI] Message:', msgMatch.title);
+    return { response:msgMatch.body||msgMatch.title, item:null, videoUrl:resolveVideoUrl(msgMatch), matchedMessage:msgMatch };
   }
 
+  // Step 2: Local item match
   const quickMatch = matchMenuItem(question, menu);
-  console.log('[AI] Local fuzzy match:', quickMatch ? quickMatch.name : 'none');
+  console.log('[AI] Quick match:', quickMatch?quickMatch.name:'none');
 
-  // -- Category search → "what are your desserts", "show me starters" etc --
-  const categoryResult = matchCategory(question, menu);
-  if (categoryResult) {
-    const { matches, searchTerm, label } = categoryResult;
-    console.log('[AI] Category search:', searchTerm, '→', matches.length, 'items');
-    // Use the Messages tab response if one matches (e.g. "what are your desserts" message)
-    // Otherwise use a friendly default
-    const msgMatch = matchMessage(question, messages);
-    const responseText = msgMatch
-      ? (msgMatch.body || msgMatch.title)
-      : 'Let me check that for you!';
-    return {
-      response: responseText,
-      item: null,
-      videoUrl: msgMatch ? resolveVideoUrl(msgMatch) : '',
-      ingredientMatches: matches,
-      searchTerm: label || searchTerm,
-    };
+  // Step 3: Category/ingredient → carousel
+  const groupResult = matchCategoryOrIngredient(question, menu);
+  if (groupResult && groupResult.matches.length > 0) {
+    console.log('[AI] Carousel:', groupResult.searchTerm, '->', groupResult.matches.length, 'items');
+    return { response:"Here's what we have for "+groupResult.searchTerm+"!", item:null, videoUrl:'', ingredientMatches:groupResult.matches, searchTerm:groupResult.searchTerm };
   }
 
-  // -- Ingredient / allergy search → return list of matching dishes --
-  const ingredientResult = matchIngredient(question, menu);
-  if (ingredientResult) {
-    const { matches, searchTerm } = ingredientResult;
-    const friendly = 'Here are the dishes with '+searchTerm+':';
-    console.log('[AI] Ingredient search:', searchTerm, '→', matches.length, 'matches');
-    return {
-      response: friendly,
-      item: null,
-      videoUrl: '',
-      ingredientMatches: matches,
-      searchTerm,
-    };
-  }
+  // Step 4: AI with full rich data
+  const richMenuList = items.map((it,n) => {
+    const p=[(n+1)+'. '+it.name];
+    if(it.price)p.push('$'+it.price);
+    if(it.cat)p.push(it.cat);
+    if(it.desc)p.push(it.desc);
+    if(it.ing)p.push('ing:'+it.ing);
+    if(it.triggerKeywords)p.push('aka:'+it.triggerKeywords);
+    return p.join(' | ');
+  }).join('\n');
+  const activeMsgs=(messages||[]).filter(m=>m.active);
+  const msgStr=activeMsgs.map((m,n)=>{const p=['MSG'+(n+1)+'. '+m.title];if(m.body)p.push(m.body);if(m.triggerKeywords)p.push('triggers:'+m.triggerKeywords);return p.join(' | ');}).join('\n')||'none';
 
-  // Build active messages for AI context
-  var activeMsgsForAI = (messages||[]).filter(function(m){ return m.active; });
-  var msgListForAI = activeMsgsForAI.length
-    ? activeMsgsForAI.map(function(m,n){
-        var line = 'MSG'+(n+1)+'. '+m.title;
-        if (m.body) line += ' | '+m.body;
-        if (m.triggerKeywords) line += ' | triggers: '+m.triggerKeywords;
-        return line;
-      }).join('\n')
-    : 'none';
-
-  var systemPrompt = [
-    'You are Anna, a warm knowledgeable host at Stella\'s restaurant.',
-    'A guest said: "'+question+'"',
+  const systemPrompt = [
+    "You are Anna, a warm host at Stella's restaurant.",
+    'Guest: "'+question+'"',
     '',
-    'MENU ITEMS (name | price | category | description | ingredients | also known as):',
-    menuList,
+    'MENU (name|price|cat|desc|ingredients|aka):',
+    richMenuList,
     '',
-    'PRESET MESSAGES (specials, FAQs, greetings):',
-    msgListForAI,
+    'MESSAGES (specials/greetings/goodbye/FAQs):',
+    msgStr,
     '',
-    'TASK: Match the guest to the best menu item OR message using ALL fields.',
-    'Loose matching rules:',
-    '- "cheeseburger" or "burger" → find nearest burger item by name/ingredients',
-    '- "something sweet" or "dessert" → best dessert item',
-    '- "what do you have for dessert/drinks/starters/chicken/etc" → reply with CATEGORY:[word they asked about]',
-    '- If a preset message fits → last line: MSG:[exact message title]',
-    '- If a menu item fits → last line: ITEM:[exact item name from list]',
-    '- If nothing fits → last line: ITEM:none',
-    'Write a warm 1-2 sentence reply FIRST, then the tag line LAST. Nothing after the tag.',
-    langInstruction
+    'Match using ALL fields. Last line ONLY:',
+    '  CATEGORY:[group] — asking about a group (desserts, drinks, chicken, burgers, etc)',
+    '  MSG:[title] — a message fits best (greeting, special, goodbye)',
+    '  ITEM:[exact name] — specific item',
+    '  ITEM:none — nothing matches',
+    'Write 1-2 warm sentences first, then the tag.',
+    langInstruction,
   ].join('\n');
 
   try {
-    var rawText = '';
-    if (cfg.format === 'anthropic') {
-      var res = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:300, system:systemPrompt, messages:[{role:'user',content:question}] }) });
-      var d = await res.json();
-      console.log('[AI] Anthropic response:', d);
-      if (d.error) throw new Error(d.error.message);
-      rawText = (d.content && d.content[0] && d.content[0].text) || '';
+    var rawText='';
+    if(cfg.format==='anthropic'){
+      var res=await fetch(cfg.baseUrl,{method:'POST',headers:{'x-api-key':apiKey,'anthropic-version':'2023-06-01','content-type':'application/json','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:cfg.model,max_tokens:300,system:systemPrompt,messages:[{role:'user',content:question}]})});
+      var d=await res.json();if(d.error)throw new Error(d.error.message);
+      rawText=(d.content&&d.content[0]&&d.content[0].text)||'';
     } else {
-      var res = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:300, temperature:0.4, messages:[{role:'system',content:systemPrompt},{role:'user',content:question}] }) });
-      var d = await res.json();
-      console.log('[AI] ' + cfg.label + ' full response:', JSON.stringify(d));
-      if (d.error) throw new Error((d.error && d.error.message) || JSON.stringify(d.error));
-      rawText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+      var res=await fetch(cfg.baseUrl,{method:'POST',headers:{'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},body:JSON.stringify({model:cfg.model,max_tokens:300,temperature:0.3,messages:[{role:'system',content:systemPrompt},{role:'user',content:question}]})});
+      var d=await res.json();if(d.error)throw new Error((d.error&&d.error.message)||JSON.stringify(d.error));
+      rawText=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content)||'';
     }
+    console.log('[AI] Raw:',rawText.substring(0,200));
+    if(!rawText.trim())throw new Error('Empty');
 
-    console.log('[AI] Raw text:', rawText);
-    if (!rawText.trim()) throw new Error('Empty AI response');
+    const allL=rawText.split('\n').map(l=>l.trim()).filter(Boolean);
+    const tagL=allL.find(l=>/^(ITEM:|MSG:|CATEGORY:)/i.test(l));
+    const reply=allL.filter(l=>!/^(ITEM:|MSG:|CATEGORY:)/i.test(l)).join(' ').trim()||'Let me help!';
 
-    var allLines = rawText.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
-    var tagLine = allLines.find(function(l){ return /^(ITEM:|MSG:|CATEGORY:)/i.test(l); });
-    var responseText = allLines.filter(function(l){ return !/^(ITEM:|MSG:|CATEGORY:)/i.test(l); }).join(' ').trim() || 'Let me help you with that!';
-
-    // CATEGORY: → show carousel of matching items
-    if (tagLine && /^CATEGORY:/i.test(tagLine)) {
-      var catName = tagLine.replace(/^CATEGORY:\s*/i,'').trim().toLowerCase();
-      console.log('[AI] Category:', catName);
-      var catItems = menu.filter(function(i){
-        if (!i.visible) return false;
-        var hay = ((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')+' '+(i.triggerKeywords||'')).toLowerCase();
-        return hay.includes(catName) || catName.includes((i.cat||'').toLowerCase());
-      });
-      return { response: responseText, item: null, videoUrl: '', ingredientMatches: catItems, searchTerm: catName };
+    if(tagL&&/^CATEGORY:/i.test(tagL)){
+      const cat=tagL.replace(/^CATEGORY:\s*/i,'').trim();
+      const r2=matchCategoryOrIngredient(cat,menu);
+      const ci=r2?r2.matches:menu.filter(i=>{if(!i.visible)return false;return((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')).toLowerCase().includes(cat.toLowerCase());});
+      return {response:reply,item:null,videoUrl:'',ingredientMatches:ci,searchTerm:cat};
     }
-
-    // MSG: → find and return preset message
-    if (tagLine && /^MSG:/i.test(tagLine)) {
-      var msgTitle = tagLine.replace(/^MSG:\s*/i,'').trim();
-      console.log('[AI] Message:', msgTitle);
-      var allActiveMsgs = (messages||[]).filter(function(m){ return m.active; });
-      var msgHit = allActiveMsgs.find(function(m){ return m.title.toLowerCase()===msgTitle.toLowerCase(); })
-        || allActiveMsgs.find(function(m){ return m.title.toLowerCase().includes(msgTitle.toLowerCase()) || msgTitle.toLowerCase().includes(m.title.toLowerCase()); });
-      if (msgHit) return { response: msgHit.body||msgHit.title, item:null, videoUrl:resolveVideoUrl(msgHit), matchedMessage:msgHit };
+    if(tagL&&/^MSG:/i.test(tagL)){
+      const mt=tagL.replace(/^MSG:\s*/i,'').trim();
+      const aa=(messages||[]).filter(m=>m.active);
+      const mh=aa.find(m=>m.title.toLowerCase()===mt.toLowerCase())||aa.find(m=>m.title.toLowerCase().includes(mt.toLowerCase()));
+      if(mh)return{response:mh.body||mh.title,item:null,videoUrl:resolveVideoUrl(mh),matchedMessage:mh};
     }
+    const exName=(tagL&&/^ITEM:/i.test(tagL))?tagL.replace(/^ITEM:\s*/i,'').trim():'none';
+    const aiMatch=exName.toLowerCase()!=='none'?matchMenuItem(exName,menu):null;
+    const item=aiMatch||quickMatch||null;
+    const videoUrl=resolveVideoUrl(item);
+    console.log('[AI] Final:',item?item.name:'none','video:',videoUrl||'none');
 
-    // ITEM: → match to menu item
-    var extractedName = (tagLine && /^ITEM:/i.test(tagLine)) ? tagLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
-    console.log('[AI] Parsed item:', extractedName, '| Response:', responseText);
-    var aiMatch = extractedName.toLowerCase() !== 'none' ? matchMenuItem(extractedName, menu) : null;
-    var item = aiMatch || quickMatch || null;
-    var videoUrl = resolveVideoUrl(item);
-    console.log('[AI] Final item:', item ? item.name : 'none', '| Video:', videoUrl||'none');
-    if (tableNum) console.log('[AI] Table', tableNum, 'video:', videoUrl);
-
-    // If no item matched -- try FAQ first, then Groq generic fallback
-    if (!item) {
-      // -- FAQ lookup --
-      var faqMatch = matchFAQ(question, faq);
-      if (faqMatch) {
-        console.log('[FAQ] Fallback:', question, '| Matched entry:', faqMatch.title);
-        // Use Groq to turn the FAQ entry into a friendly spoken reply
-        var faqPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest asked: "' + question + '". Here is the relevant info: "' + faqMatch.title + ': ' + faqMatch.body + '". Reply warmly and conversationally in 1-2 sentences using this info. Output ONLY the reply, no labels.' + langInstruction;
-        try {
-          var faqRaw = '';
-          if (cfg.format === 'anthropic') {
-            var frf = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:150, system:faqPrompt, messages:[{role:'user',content:question}] }) });
-            var ffd = await frf.json(); faqRaw = (ffd.content&&ffd.content[0]&&ffd.content[0].text)||'';
-          } else {
-            var frf = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:150, temperature:0.5, messages:[{role:'system',content:faqPrompt},{role:'user',content:question}] }) });
-            var ffd = await frf.json(); faqRaw = (ffd.choices&&ffd.choices[0]&&ffd.choices[0].message&&ffd.choices[0].message.content)||'';
-          }
-          var faqReply = faqRaw.trim() || faqMatch.body;
-          console.log('[FAQ] Reply:', faqReply);
-          return { response: faqReply, item: null, videoUrl: '', faqEntry: faqMatch };
-        } catch(fe) {
-          // If Groq fails, just return raw body
-          return { response: faqMatch.body, item: null, videoUrl: '', faqEntry: faqMatch };
-        }
+    if(!item){
+      const faqMatch=matchFAQ(question,faq);
+      if(faqMatch){
+        const fp="You are Anna, host at Stella's. Guest: \""+question+"\". Info: \""+faqMatch.title+': '+faqMatch.body+"\". Reply warmly in 1-2 sentences."+langInstruction;
+        try{
+          var fr,fd,fr2='';
+          if(cfg.format==='anthropic'){fr=await fetch(cfg.baseUrl,{method:'POST',headers:{'x-api-key':apiKey,'anthropic-version':'2023-06-01','content-type':'application/json','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:cfg.model,max_tokens:150,system:fp,messages:[{role:'user',content:question}]})});fd=await fr.json();fr2=(fd.content&&fd.content[0]&&fd.content[0].text)||'';}
+          else{fr=await fetch(cfg.baseUrl,{method:'POST',headers:{'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},body:JSON.stringify({model:cfg.model,max_tokens:150,temperature:0.5,messages:[{role:'system',content:fp},{role:'user',content:question}]})});fd=await fr.json();fr2=(fd.choices&&fd.choices[0]&&fd.choices[0].message&&fd.choices[0].message.content)||'';}
+          return{response:fr2.trim()||faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};
+        }catch(fe){return{response:faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};}
       }
-      var fallbackPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest said: "' + question + '". There is no matching menu item. Reply warmly in 1-2 sentences -- apologize briefly, stay helpful, suggest they browse the menu or ask something else. Be conversational, never robotic. Output ONLY the reply text, no labels or extra lines.' + langInstruction;
-      try {
-        var fr; var fd;
-        if (cfg.format === 'anthropic') {
-          fr = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:120, system:fallbackPrompt, messages:[{role:'user',content:question}] }) });
-          fd = await fr.json(); rawText = (fd.content&&fd.content[0]&&fd.content[0].text)||'';
-        } else {
-          fr = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:120, temperature:0.6, messages:[{role:'system',content:fallbackPrompt},{role:'user',content:question}] }) });
-          fd = await fr.json(); rawText = (fd.choices&&fd.choices[0]&&fd.choices[0].message&&fd.choices[0].message.content)||'';
-        }
-        var fallbackReply = rawText.trim() || "I'm not sure we have that, but I'd love to help you find something delicious! Feel free to browse the menu or ask me anything.";
-        console.log('[AI] Unknown fallback:', fallbackReply);
-        return { response: fallbackReply, item: null, videoUrl: '' }; // empty videoUrl → idle image, not welcome video
-      } catch(fe) {
-        console.error('[AI] Fallback call failed:', fe);
-        return { response: "I'm not sure about that one -- but our menu has some amazing options! Ask me about any dish and I'll tell you all about it.", item: null, videoUrl: '' };
-      }
+      return{response:reply||"I'm not sure — browse the menu or ask me about any dish!",item:null,videoUrl:''};
     }
-
-    return { response: responseText, item: item, videoUrl: videoUrl };
-
-  } catch(err) {
-    console.error('[AI] Failed:', err);
-    if (quickMatch) {
-      var vid = resolveVideoUrl(quickMatch);
-      return { response: quickMatch.name + ' is a great choice -- ' + quickMatch.desc.split('.')[0] + '.', item: quickMatch, videoUrl: vid };
-    }
-    return { response: "I'm not sure about that one -- ask me about anything on the menu and I'll help!", item:null, videoUrl:'' };
+    return{response:reply,item,videoUrl};
+  } catch(err){
+    console.error('[AI] Failed:',err);
+    if(quickMatch)return{response:quickMatch.name+' is great! '+(quickMatch.desc||'').split('.')[0]+'.',item:quickMatch,videoUrl:resolveVideoUrl(quickMatch)};
+    return{response:"I'm not sure — ask me about anything on the menu!",item:null,videoUrl:''};
   }
 }
+
 
 // ==========================================
 // HEYGEN STREAMING AVATAR ENGINE
