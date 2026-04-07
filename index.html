@@ -772,89 +772,174 @@ function matchMenuItem(rawName, menu) {
   if (!rawName || rawName.toLowerCase() === 'none') return null;
   const q = rawName.toLowerCase().trim();
   const items = menu.filter(i => i.visible);
-  // Exact
-  let hit = items.find(i => i.name.toLowerCase() === q); if (hit) return hit;
-  // Name contains query
-  hit = items.find(i => i.name.toLowerCase().includes(q)); if (hit) return hit;
-  // Query contains name
-  hit = items.find(i => q.includes(i.name.toLowerCase())); if (hit) return hit;
-  // Scored: name(5) + any field(2) + stem partial(1)
-  const qW = q.split(/\s+/).filter(w => w.length > 2);
-  if (!qW.length) return null;
-  let best = 0, bestIt = null;
-  for (const item of items) {
-    const nl = item.name.toLowerCase();
-    const hay = [nl,(item.desc||'').toLowerCase(),(item.ing||'').toLowerCase(),(item.cat||'').toLowerCase(),(item.triggerKeywords||'').toLowerCase()].join(' ');
-    const hw = hay.split(/\s+/);
-    let sc = 0;
-    for (const w of qW) {
-      if (nl.includes(w)) { sc += 5; continue; }
-      if (hay.includes(w)) { sc += 2; continue; }
-      for (const h of hw) { if (h.length>3&&w.length>3&&(h.includes(w)||w.includes(h))){ sc+=1; break; } }
-    }
-    if (sc > best) { best = sc; bestIt = item; }
-  }
-  return best >= 1 ? bestIt : null;
-}
 
+  // 1. Exact name match
+  let hit = items.find(i => i.name.toLowerCase() === q);
+  if (hit) return hit;
+
+  // 2. Name includes query
+  hit = items.find(i => i.name.toLowerCase().includes(q));
+  if (hit) return hit;
+
+  // 3. Query includes name
+  hit = items.find(i => q.includes(i.name.toLowerCase()));
+  if (hit) return hit;
+
+  // 4. Any word in query matches any word in name or description
+  const queryWords = q.split(/\s+/).filter(w => w.length > 2);
+  let bestScore = 0, bestItem = null;
+  for (const item of items) {
+    const haystack = (item.name + ' ' + item.desc + ' ' + (item.ing || '') + ' ' + item.cat).toLowerCase();
+    let score = 0;
+    for (const word of queryWords) {
+      if (haystack.includes(word)) score++;
+    }
+    if (score > bestScore) { bestScore = score; bestItem = item; }
+  }
+  if (bestScore > 0) return bestItem;
+
+  return null;
+}
 
 // ==========================================
 // INGREDIENT SEARCH -- returns ALL items matching an ingredient/keyword
 // Used when user asks "dishes with spinach", "anything with parmesan" etc
 // ==========================================
 function matchIngredient(question, menu) {
-  return matchCategoryOrIngredient(question, menu);
+  const q = question.toLowerCase();
+  // Detect ingredient-search intent
+  const ingredientTriggers = [
+    'dishes with','items with','anything with','do you have anything with',
+    'what has','what contains','contains','with spinach','with chicken',
+    'has parmesan','has truffle','allergy','allergic','vegan','vegetarian',
+    'gluten','dairy','nut','peanut','shellfish','has egg','has dairy',
+    'what can i have if','what can i eat if','safe for','good for'
+  ];
+  const isIngredientSearch = ingredientTriggers.some(t => q.includes(t));
+  if (!isIngredientSearch) return null;
+
+  // Extract the ingredient word(s) -- strip trigger phrases
+  let searchTerm = q;
+  ingredientTriggers.forEach(t => { searchTerm = searchTerm.replace(t,''); });
+  searchTerm = searchTerm.replace(/[?!.,]/g,'').trim();
+  const words = searchTerm.split(/\s+/).filter(w => w.length > 2);
+  if (!words.length) return null;
+
+  // Find all visible menu items that contain any of the search words
+  const matches = menu.filter(item => {
+    if (!item.visible) return false;
+    const haystack = ((item.ing||'') + ' ' + item.desc + ' ' + item.name).toLowerCase();
+    return words.some(w => haystack.includes(w));
+  });
+
+  return matches.length > 0 ? { matches, searchTerm: words.join(' ') } : null;
 }
-
-
 // ==========================================
 // CATEGORY SEARCH -- "what are your desserts", "show me lunch", etc.
 // Returns matching items by category. Reuses the ingredient list card UI.
 // ==========================================
-function matchCategoryOrIngredient(question, menu) {
+function matchCategory(question, menu) {
   const q = question.toLowerCase().trim();
-  const vis = menu.filter(i => i.visible);
-  const groupPhrases = ['what do you have','what have you got','show me','do you have any','what kind of','what types of','what are your',"what's your","what's on",'whats on','full menu','whole menu','everything','all items','dishes with','items with','anything with','what has','what contains','tell me about your','what can i get'];
-  const hasGroup = groupPhrases.some(t => q.includes(t));
-  // Dietary
-  const diet = {
-    'vegan':       i => !/(chicken|beef|pork|fish|dairy|cheese|egg|butter|cream|milk|meat|shrimp|bacon)/i.test(i.ing||''),
-    'vegetarian':  i => !/(chicken|beef|pork|fish|shrimp|bacon|meat)/i.test(i.ing||''),
-    'gluten free': i => !/(gluten)/i.test(i.ing||''),
-    'gluten-free': i => !/(gluten)/i.test(i.ing||''),
-    'dairy free':  i => !/(cheese|butter|cream|milk|dairy)/i.test(i.ing||''),
+
+  // Category intent phrases
+  const categoryTriggers = [
+    'dessert','desserts','sweet','sweets',
+    'starter','starters','appetizer','appetizers','app','apps','share','shareable',
+    'main','mains','entree','entrees','dinner','dinners',
+    'lunch','brunch',
+    'salad','salads','soup','soups',
+    'drink','drinks','cocktail','cocktails','beverage','beverages','bar menu',
+    'side','sides',
+    'pasta','pastas','bowl','bowls','noodle','noodles',
+    'steak','steaks','grill','grilled',
+    'handheld','handhelds','burger','burgers','sandwich','sandwiches','wrap','wraps','taco','tacos',
+    'kids','kids menu','children',
+    'gluten free','gluten-free','dairy free','vegan','vegetarian','plant based','plant-based',
+    'what do you have','what is on the menu','show me','what are your','what\'s on',
+    'full menu','everything','all items','whole menu'
+  ];
+
+  const isCategorySearch = categoryTriggers.some(t => q.includes(t));
+  if (!isCategorySearch) return null;
+
+  // Map question words to actual category names in the menu
+  const catMap = {
+    'dessert': ['Desserts','dessert'],
+    'desserts': ['Desserts','dessert'],
+    'sweet': ['Desserts','dessert'],
+    'starter': ['Starters','Appetizers','Share','starters','appetizers'],
+    'starters': ['Starters','Appetizers','Share'],
+    'appetizer': ['Starters','Appetizers','Share'],
+    'appetizers': ['Starters','Appetizers','Share'],
+    'app': ['Starters','Appetizers','Share'],
+    'apps': ['Starters','Appetizers','Share'],
+    'share': ['Starters','Appetizers','Share'],
+    'main': ['Mains','Entrees','mains'],
+    'mains': ['Mains','Entrees'],
+    'entree': ['Mains','Entrees'],
+    'dinner': ['Mains','Entrees','Steaks'],
+    'salad': ['Salads','Soup & Salads'],
+    'salads': ['Salads','Soup & Salads'],
+    'soup': ['Soups','Soup & Salads'],
+    'drink': ['Drinks','Cocktails','Bar'],
+    'drinks': ['Drinks','Cocktails','Bar'],
+    'cocktail': ['Drinks','Cocktails','Bar'],
+    'cocktails': ['Drinks','Cocktails','Bar'],
+    'side': ['Sides','sides'],
+    'sides': ['Sides','sides'],
+    'pasta': ['Pastas','Pastas & Bowls','pasta'],
+    'bowl': ['Bowls','Pastas & Bowls'],
+    'bowls': ['Bowls','Pastas & Bowls'],
+    'steak': ['Steaks','steaks'],
+    'steaks': ['Steaks'],
+    'burger': ['Handhelds','burgers'],
+    'burgers': ['Handhelds'],
+    'sandwich': ['Handhelds'],
+    'taco': ['Handhelds','tacos'],
+    'handheld': ['Handhelds'],
+    'kids': ['Kids','kids menu'],
+    'lunch': null, // show everything for now
+    'brunch': null,
   };
-  for (const [k,fn] of Object.entries(diet)) {
-    if (q.includes(k)) { const m=vis.filter(i=>fn(i)); if(m.length) return {matches:m,searchTerm:k}; }
-  }
-  if (q.includes('full menu')||q.includes('whole menu')||q.includes('everything')||q.includes('all items'))
-    return { matches:vis, searchTerm:'the full menu' };
-  // Extract search term
-  let term = q;
-  groupPhrases.forEach(t => { term = term.replace(t,' '); });
-  term = term.replace(/[?!.,]/g,'').replace(/\s+/g,' ').trim();
-  const fillers = new Set(['the','and','for','our','you','can','get','are','any','some','have','please','want','like','just','tell','about']);
-  const words = term.split(' ').filter(w => w.length>1 && !fillers.has(w));
-  if (!words.length) return hasGroup ? {matches:vis,searchTerm:'menu'} : null;
-  // Score items
-  const scored = vis.map(item => {
-    const hay = [item.name,item.cat||'',item.desc||'',item.ing||'',item.triggerKeywords||''].join(' ').toLowerCase();
-    const hw = hay.split(/\s+/);
-    let sc = 0;
-    for (const w of words) {
-      if (item.name.toLowerCase().includes(w)) sc+=4;
-      else if (hay.includes(w)) sc+=2;
-      for (const h of hw) { if(h.length>2&&w.length>2&&h!==w&&(h.includes(w)||w.includes(h))){ sc+=1; break; } }
+
+  // Special dietary filters
+  const dietaryMap = {
+    'gluten free': item => (item.ing||'').toLowerCase().includes('gluten') === false,
+    'gluten-free': item => (item.ing||'').toLowerCase().includes('gluten') === false,
+    'vegan': item => !(item.ing||'').toLowerCase().match(/chicken|beef|pork|fish|dairy|cheese|egg|butter|cream|milk|meat/),
+    'vegetarian': item => !(item.ing||'').toLowerCase().match(/chicken|beef|pork|fish|shrimp|prawn|bacon|meat/),
+    'dairy free': item => !(item.ing||'').toLowerCase().match(/cheese|butter|cream|milk|dairy/),
+    'plant based': item => !(item.ing||'').toLowerCase().match(/chicken|beef|pork|fish|shrimp|prawn|bacon|egg|dairy|cheese|butter|cream|milk|meat/),
+  };
+
+  // Check dietary filter first
+  for (const [key, filterFn] of Object.entries(dietaryMap)) {
+    if (q.includes(key)) {
+      const matches = menu.filter(i => i.visible && filterFn(i));
+      if (matches.length) return { matches, searchTerm: key, label: key };
     }
-    return {item,sc};
-  }).filter(x=>x.sc>0).sort((a,b)=>b.sc-a.sc);
-  // Show carousel: group intent + matches, OR 3+ matches
-  if (scored.length>0&&(hasGroup||scored.length>=3)) return {matches:scored.map(x=>x.item),searchTerm:words.join(' ')};
-  if (scored.length===1&&hasGroup) return {matches:scored.map(x=>x.item),searchTerm:words.join(' ')};
+  }
+
+  // "show me everything" / "full menu"
+  if (q.includes('full menu')||q.includes('everything')||q.includes('whole menu')||q.includes('all items')||(q.includes('what do you have')&&!categoryTriggers.slice(0,30).some(t=>q.includes(t)&&t.length>4))) {
+    const matches = menu.filter(i=>i.visible);
+    if (matches.length) return { matches, searchTerm: 'everything on the menu', label: 'full menu' };
+  }
+
+  // Match by category
+  for (const [key, cats] of Object.entries(catMap)) {
+    if (!q.includes(key)) continue;
+    if (!cats) {
+      // Return all visible items for generic queries
+      const matches = menu.filter(i=>i.visible);
+      return { matches, searchTerm: key, label: key };
+    }
+    const matches = menu.filter(i => i.visible && cats.some(c => i.cat.toLowerCase().includes(c.toLowerCase())));
+    if (matches.length) return { matches, searchTerm: key, label: cats[0] };
+  }
+
   return null;
 }
-function matchCategory(question, menu) { return matchCategoryOrIngredient(question, menu); }
-
 
 // ==========================================
 // VIDEO URL RESOLVER
@@ -946,46 +1031,66 @@ function detectContextPhrase(question) {
 function matchMessage(question, messages) {
   const q = question.toLowerCase().trim();
   const now = new Date();
+
   const active = messages.filter(m => {
     if (!m.active) return false;
-    if (m.scheduleStart && new Date(m.scheduleStart)>now) return false;
-    if (m.scheduleEnd   && new Date(m.scheduleEnd)<now)   return false;
+    if (m.scheduleStart && new Date(m.scheduleStart) > now) return false;
+    if (m.scheduleEnd && new Date(m.scheduleEnd) < now) return false;
     return true;
   });
-  // Priority 0: explicit trigger keywords
+
+  // -- Priority 0: Explicit trigger keywords (highest priority) --
   for (const m of active) {
     if (!m.triggerKeywords) continue;
-    const phrases = m.triggerKeywords.split(',').map(p=>p.trim().toLowerCase()).filter(Boolean);
-    for (const ph of phrases) { if (ph && q.includes(ph)) { console.log('[Msg] trigger:',ph,'->',m.title); return m; } }
-  }
-  // Priority 1: goodbye
-  if (['goodbye','bye','see you','see ya','have a good','leaving now','good night','good evening'].some(w=>q.includes(w))) {
-    const m=active.find(m=>m.type==='goodbye'); if(m) return m;
-  }
-  // Priority 2: greeting — only pure short greetings, not "hi what burgers do you have"
-  const isJustGreeting = ['hi','hello','hey','good morning','howdy'].some(w=>q===w||(q.startsWith(w+' ')&&q.split(' ').length<=4));
-  if (isJustGreeting) { const m=active.find(m=>m.type==='welcome'); if(m) return m; }
-  // Priority 3: promos/specials
-  if (['special','specials','promo','deal','offer','happy hour','discount',"what's on",'today','tonight'].some(w=>q.includes(w))) {
-    const promos=active.filter(m=>['promo','announcement','seasonal','event'].includes(m.type));
-    if (promos.length) {
-      const sc=promos.map(m=>({m,s:q.split(/\s+/).filter(w=>w.length>2&&(m.title+' '+m.body).toLowerCase().includes(w)).length})).sort((a,b)=>b.s-a.s);
-      return sc[0].s>0?sc[0].m:promos[0];
+    const phrases = m.triggerKeywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
+    for (const phrase of phrases) {
+      if (phrase && q.includes(phrase)) {
+        console.log('[Messages] Keyword matched:', phrase, '| type:', m.type, '| title:', m.title);
+        return m;
+      }
     }
   }
-  // Priority 4: scored scan — high threshold to avoid false positives on menu questions
-  const qW=q.split(/\s+/).filter(w=>w.length>3);
-  if (!qW.length) return null;
-  let best=null,bestSc=0;
-  for (const m of active) {
-    const hay=(m.title+' '+m.body+' '+(m.triggerKeywords||'')).toLowerCase();
-    const sc=qW.filter(w=>hay.includes(w)).length;
-    if(sc>bestSc){bestSc=sc;best=m;}
+
+  // -- Priority 1: Goodbye -- exact farewell phrases only --
+  const goodbyeWords = ['goodbye','bye','see you','see ya','have a good','leaving now','good night','good evening'];
+  if (goodbyeWords.some(w => q.includes(w))) {
+    const m = active.find(m => m.type === 'goodbye');
+    if (m) { console.log('[Messages] Goodbye triggered:', q, '\u2192', m.title); return m; }
   }
-  if (best && bestSc>=Math.min(3,qW.length)) return best;
+
+  // -- Priority 2: Greeting --
+  const greetWords = ['hello','hi','hey','good morning','howdy',"what's up",'how are you'];
+  if (greetWords.some(w => q.includes(w))) {
+    const m = active.find(m => m.type === 'welcome');
+    if (m) { console.log('[Messages] Matched by greeting \u2192 welcome:', m.title); return m; }
+  }
+
+  // -- Priority 3: Promo --
+  const promoWords = ['special','specials','promo','deal','offer','happy hour','discount','featured',"what's on",'today','tonight'];
+  if (promoWords.some(w => q.includes(w))) {
+    const promos = active.filter(m => ['promo','announcement','seasonal','event'].includes(m.type));
+    const scored = promos.map(m => {
+      const hay = (m.title + ' ' + m.body).toLowerCase();
+      const words = q.split(/\s+/).filter(w => w.length > 2);
+      const score = words.filter(w => hay.includes(w)).length;
+      return { m, score };
+    }).sort((a,b) => b.score - a.score);
+    if (scored.length && scored[0].score > 0) { console.log('[Messages] Matched promo:', scored[0].m.title); return scored[0].m; }
+    if (promos.length) { console.log('[Messages] Fallback promo:', promos[0].title); return promos[0]; }
+  }
+
+  // -- Priority 4: General keyword scan (threshold >= 3 words) --
+  const qWords = q.split(/\s+/).filter(w => w.length > 2);
+  let best = null, bestScore = 0;
+  for (const m of active) {
+    const hay = (m.title + ' ' + m.body + ' ' + (m.type||'')).toLowerCase();
+    const score = qWords.filter(w => hay.includes(w)).length;
+    if (score > bestScore) { bestScore = score; best = m; }
+  }
+  if (best && bestScore >= 3) { console.log('[Messages] Keyword scan match:', best.title, 'score', bestScore); return best; }
+
   return null;
 }
-
 
 // ==========================================
 // GLOBAL MENU TRIGGER SCANNER
@@ -1222,113 +1327,182 @@ async function askAI(question, menu, messages, tableNum, faq) {
     }
   }
 
-  // Step 1: Messages (greetings, goodbye, specials, FAQs)
+  // -- Step 0.5: Hardcoded instant category detection --
+  const _qLow = question.toLowerCase();
+  const _isGroupQ = ['what do you have','what have you got','show me all','do you have any','what kind of','what types of','what are your','got any','can i see your','tell me about your','what can i get for','show me the'].some(t=>_qLow.includes(t));
+  if (_isGroupQ) {
+    const _CATS = [
+      {words:['drink','drinks','beverage','cocktail','wine','beer','juice','soda','alcohol','bar','mocktail'],label:'Drinks'},
+      {words:['dessert','desserts','sweet','sweets','cake','ice cream','pudding','tiramisu','chocolate'],label:'Desserts'},
+      {words:['starter','starters','appetizer','appetizers','app','apps','share','shareable'],label:'Starters'},
+      {words:['main','mains','entree','entrees'],label:'Mains'},
+      {words:['burger','burgers','cheeseburger'],label:'Burgers'},
+      {words:['sandwich','sandwiches','wrap','wraps','sub'],label:'Sandwiches'},
+      {words:['salad','salads'],label:'Salads'},
+      {words:['soup','soups','chowder'],label:'Soups'},
+      {words:['pasta','pastas','noodle','spaghetti'],label:'Pasta'},
+      {words:['pizza','pizzas','flatbread'],label:'Pizza'},
+      {words:['steak','steaks'],label:'Steaks'},
+      {words:['chicken','wings','wing','poultry'],label:'Chicken'},
+      {words:['seafood','fish','salmon','shrimp','lobster'],label:'Seafood'},
+      {words:['kids','children','child','kid'],label:'Kids'},
+    ];
+    for (const cat of _CATS) {
+      if (cat.words.some(w=>_qLow.includes(w))) {
+        const catItems = menu.filter(i=>{
+          if(!i.visible)return false;
+          const hay=((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')+' '+(i.triggerKeywords||'')).toLowerCase();
+          return cat.words.some(w=>hay.includes(w));
+        });
+        if (catItems.length>0) {
+          console.log('[AI] Instant category:',cat.label,'->',catItems.length,'items');
+          return {response:"Here's what we have for "+cat.label.toLowerCase()+"!",item:null,videoUrl:'',ingredientMatches:catItems,searchTerm:cat.label};
+        }
+      }
+    }
+  }
+
+  // -- Step 1: Check all active Messages entries (non-order questions only) --
   const msgMatch = matchMessage(question, messages);
   if (msgMatch) {
-    console.log('[AI] Message:', msgMatch.title);
-    return { response:msgMatch.body||msgMatch.title, item:null, videoUrl:resolveVideoUrl(msgMatch), matchedMessage:msgMatch };
+    console.log('[AI] Returning preset message:', msgMatch.title, '| Type:', msgMatch.type);
+    const vid = resolveVideoUrl(msgMatch);
+    console.log('[AI] Message video URL:', vid || 'none');
+    return {
+      response: msgMatch.body || msgMatch.title,
+      item: null,
+      videoUrl: vid,
+      matchedMessage: msgMatch,
+    };
   }
 
-  // Step 2: Quick local item match
   const quickMatch = matchMenuItem(question, menu);
-  console.log('[AI] Quick match:', quickMatch?quickMatch.name:'none');
+  console.log('[AI] Local fuzzy match:', quickMatch ? quickMatch.name : 'none');
 
-  // Step 3: Category/ingredient → carousel
-  const groupResult = matchCategoryOrIngredient(question, menu);
-  if (groupResult && groupResult.matches.length > 0) {
-    console.log('[AI] Carousel:', groupResult.searchTerm, '->', groupResult.matches.length, 'items');
-    return { response:"Here's what we have for "+groupResult.searchTerm+"!", item:null, videoUrl:'', ingredientMatches:groupResult.matches, searchTerm:groupResult.searchTerm };
+  // -- Category search → "what are your desserts", "show me starters" etc --
+  const categoryResult = matchCategory(question, menu);
+  if (categoryResult) {
+    const { matches, searchTerm, label } = categoryResult;
+    console.log('[AI] Category search:', searchTerm, '→', matches.length, 'items');
+    // Use the Messages tab response if one matches (e.g. "what are your desserts" message)
+    // Otherwise use a friendly default
+    const msgMatch = matchMessage(question, messages);
+    const responseText = msgMatch
+      ? (msgMatch.body || msgMatch.title)
+      : 'Let me check that for you!';
+    return {
+      response: responseText,
+      item: null,
+      videoUrl: msgMatch ? resolveVideoUrl(msgMatch) : '',
+      ingredientMatches: matches,
+      searchTerm: label || searchTerm,
+    };
   }
 
-  // Step 4: AI call with full rich menu + messages data
-  const richMenu = items.map((it,n) => {
-    const p=[(n+1)+'. '+it.name];
-    if(it.price)p.push('$'+it.price);
-    if(it.cat)p.push(it.cat);
-    if(it.desc)p.push(it.desc);
-    if(it.ing)p.push('ing:'+it.ing);
-    if(it.triggerKeywords)p.push('aka:'+it.triggerKeywords);
-    return p.join(' | ');
-  }).join('\n');
-  const activeMsgs=(messages||[]).filter(m=>m.active);
-  const msgStr=activeMsgs.map((m,n)=>{const p=['MSG'+(n+1)+'. '+m.title];if(m.body)p.push(m.body);if(m.triggerKeywords)p.push('triggers:'+m.triggerKeywords);return p.join(' | ');}).join('\n')||'none';
+  // -- Ingredient / allergy search → return list of matching dishes --
+  const ingredientResult = matchIngredient(question, menu);
+  if (ingredientResult) {
+    const { matches, searchTerm } = ingredientResult;
+    const friendly = 'Here are the dishes with '+searchTerm+':';
+    console.log('[AI] Ingredient search:', searchTerm, '→', matches.length, 'matches');
+    return {
+      response: friendly,
+      item: null,
+      videoUrl: '',
+      ingredientMatches: matches,
+      searchTerm,
+    };
+  }
 
-  const systemPrompt = [
-    "You are Anna, a warm host at Stella's restaurant.",
-    'Guest said: "'+question+'"',
-    '',
-    'MENU (name | price | category | description | ingredients | aka):',
-    richMenu,
-    '',
-    'MESSAGES (greetings/specials/goodbye/order-confirmed/FAQs):',
-    msgStr,
-    '',
-    'Match loosely using ALL fields. Last line ONLY one of:',
-    '  CATEGORY:[word] — guest asking about a group (desserts, drinks, chicken, burgers, sandwiches)',
-    '  MSG:[exact title] — a preset message fits (greeting, special, goodbye)',
-    '  ITEM:[exact name] — a specific menu item fits',
-    '  ITEM:none — nothing fits',
-    'Write 1-2 warm sentences first, tag on very last line, nothing after.',
-    langInstruction,
-  ].join('\n');
+  const systemPrompt = 'You are Anna, a friendly restaurant host at Stella\'s. A guest asked: "' + question + '"\n\nMenu:\n' + menuList + '\n\nWrite a warm 1-2 sentence reply about the best matching item. On the VERY LAST LINE write exactly: ITEM:[item name] -- or ITEM:none if nothing matches. Never write anything after that line.' + langInstruction;
 
   try {
-    var rawText='';
-    if(cfg.format==='anthropic'){
-      var res=await fetch(cfg.baseUrl,{method:'POST',headers:{'x-api-key':apiKey,'anthropic-version':'2023-06-01','content-type':'application/json','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:cfg.model,max_tokens:300,system:systemPrompt,messages:[{role:'user',content:question}]})});
-      var d=await res.json();if(d.error)throw new Error(d.error.message);
-      rawText=(d.content&&d.content[0]&&d.content[0].text)||'';
+    var rawText = '';
+    if (cfg.format === 'anthropic') {
+      var res = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:300, system:systemPrompt, messages:[{role:'user',content:question}] }) });
+      var d = await res.json();
+      console.log('[AI] Anthropic response:', d);
+      if (d.error) throw new Error(d.error.message);
+      rawText = (d.content && d.content[0] && d.content[0].text) || '';
     } else {
-      var res=await fetch(cfg.baseUrl,{method:'POST',headers:{'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},body:JSON.stringify({model:cfg.model,max_tokens:300,temperature:0.3,messages:[{role:'system',content:systemPrompt},{role:'user',content:question}]})});
-      var d=await res.json();if(d.error)throw new Error((d.error&&d.error.message)||JSON.stringify(d.error));
-      rawText=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content)||'';
+      var res = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:300, temperature:0.4, messages:[{role:'system',content:systemPrompt},{role:'user',content:question}] }) });
+      var d = await res.json();
+      console.log('[AI] ' + cfg.label + ' full response:', JSON.stringify(d));
+      if (d.error) throw new Error((d.error && d.error.message) || JSON.stringify(d.error));
+      rawText = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
     }
-    console.log('[AI] Raw:',rawText.substring(0,200));
-    if(!rawText.trim())throw new Error('Empty');
 
-    const allL=rawText.split('\n').map(l=>l.trim()).filter(Boolean);
-    const tagL=allL.find(l=>/^(ITEM:|MSG:|CATEGORY:)/i.test(l));
-    const reply=allL.filter(l=>!/^(ITEM:|MSG:|CATEGORY:)/i.test(l)).join(' ').trim()||"Let me help with that!";
+    console.log('[AI] Raw text:', rawText);
+    if (!rawText.trim()) throw new Error('Empty AI response');
 
-    if(tagL&&/^CATEGORY:/i.test(tagL)){
-      const cat=tagL.replace(/^CATEGORY:\s*/i,'').trim();
-      const r2=matchCategoryOrIngredient(cat,menu);
-      const ci=r2?r2.matches:menu.filter(i=>{if(!i.visible)return false;return((i.cat||'')+' '+(i.name||'')+' '+(i.desc||'')+' '+(i.ing||'')).toLowerCase().includes(cat.toLowerCase());});
-      return {response:reply,item:null,videoUrl:'',ingredientMatches:ci,searchTerm:cat};
-    }
-    if(tagL&&/^MSG:/i.test(tagL)){
-      const mt=tagL.replace(/^MSG:\s*/i,'').trim();
-      const aa=(messages||[]).filter(m=>m.active);
-      const mh=aa.find(m=>m.title.toLowerCase()===mt.toLowerCase())||aa.find(m=>m.title.toLowerCase().includes(mt.toLowerCase()));
-      if(mh)return{response:mh.body||mh.title,item:null,videoUrl:resolveVideoUrl(mh),matchedMessage:mh};
-    }
-    const exName=(tagL&&/^ITEM:/i.test(tagL))?tagL.replace(/^ITEM:\s*/i,'').trim():'none';
-    const aiMatch=exName.toLowerCase()!=='none'?matchMenuItem(exName,menu):null;
-    const item=aiMatch||quickMatch||null;
-    const videoUrl=resolveVideoUrl(item);
-    console.log('[AI] Final:',item?item.name:'none','| video:',videoUrl||'none');
+    var allLines = rawText.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+    var itemLine = allLines.find(function(l){ return /^ITEM:/i.test(l); });
+    var extractedName = itemLine ? itemLine.replace(/^ITEM:\s*/i,'').trim() : 'none';
+    var responseText = allLines.filter(function(l){ return !/^ITEM:/i.test(l); }).join(' ').trim() || "That sounds great -- let me tell you more!";
 
-    if(!item){
-      const faqMatch=matchFAQ(question,faq);
-      if(faqMatch){
-        const fp="You are Anna, host at Stella's. Guest: \""+question+"\". Info: \""+faqMatch.title+': '+faqMatch.body+"\". Reply warmly in 1-2 sentences. Output ONLY the reply."+langInstruction;
-        try{
-          var fr,fd,fr2='';
-          if(cfg.format==='anthropic'){fr=await fetch(cfg.baseUrl,{method:'POST',headers:{'x-api-key':apiKey,'anthropic-version':'2023-06-01','content-type':'application/json','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:cfg.model,max_tokens:150,system:fp,messages:[{role:'user',content:question}]})});fd=await fr.json();fr2=(fd.content&&fd.content[0]&&fd.content[0].text)||'';}
-          else{fr=await fetch(cfg.baseUrl,{method:'POST',headers:{'Authorization':'Bearer '+apiKey,'Content-Type':'application/json'},body:JSON.stringify({model:cfg.model,max_tokens:150,temperature:0.5,messages:[{role:'system',content:fp},{role:'user',content:question}]})});fd=await fr.json();fr2=(fd.choices&&fd.choices[0]&&fd.choices[0].message&&fd.choices[0].message.content)||'';}
-          return{response:fr2.trim()||faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};
-        }catch(fe){return{response:faqMatch.body,item:null,videoUrl:'',faqEntry:faqMatch};}
+    console.log('[AI] Parsed item:', extractedName, '| Response:', responseText);
+
+    var aiMatch = extractedName.toLowerCase() !== 'none' ? matchMenuItem(extractedName, menu) : null;
+    var item = aiMatch || quickMatch || null;
+    var videoUrl = resolveVideoUrl(item);
+    console.log('[AI] Final item:', item ? item.name : 'none', '| Video:', videoUrl||'none');
+    if (tableNum) console.log('[AI] Table', tableNum, 'video:', videoUrl);
+
+    // If no item matched -- try FAQ first, then Groq generic fallback
+    if (!item) {
+      // -- FAQ lookup --
+      var faqMatch = matchFAQ(question, faq);
+      if (faqMatch) {
+        console.log('[FAQ] Fallback:', question, '| Matched entry:', faqMatch.title);
+        // Use Groq to turn the FAQ entry into a friendly spoken reply
+        var faqPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest asked: "' + question + '". Here is the relevant info: "' + faqMatch.title + ': ' + faqMatch.body + '". Reply warmly and conversationally in 1-2 sentences using this info. Output ONLY the reply, no labels.' + langInstruction;
+        try {
+          var faqRaw = '';
+          if (cfg.format === 'anthropic') {
+            var frf = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:150, system:faqPrompt, messages:[{role:'user',content:question}] }) });
+            var ffd = await frf.json(); faqRaw = (ffd.content&&ffd.content[0]&&ffd.content[0].text)||'';
+          } else {
+            var frf = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:150, temperature:0.5, messages:[{role:'system',content:faqPrompt},{role:'user',content:question}] }) });
+            var ffd = await frf.json(); faqRaw = (ffd.choices&&ffd.choices[0]&&ffd.choices[0].message&&ffd.choices[0].message.content)||'';
+          }
+          var faqReply = faqRaw.trim() || faqMatch.body;
+          console.log('[FAQ] Reply:', faqReply);
+          return { response: faqReply, item: null, videoUrl: '', faqEntry: faqMatch };
+        } catch(fe) {
+          // If Groq fails, just return raw body
+          return { response: faqMatch.body, item: null, videoUrl: '', faqEntry: faqMatch };
+        }
       }
-      return{response:reply||"I'm not sure — feel free to browse the menu or ask me about any dish!",item:null,videoUrl:''};
+      var fallbackPrompt = 'You are Anna, a friendly AI host at Stella\'s restaurant. A guest said: "' + question + '". There is no matching menu item. Reply warmly in 1-2 sentences -- apologize briefly, stay helpful, suggest they browse the menu or ask something else. Be conversational, never robotic. Output ONLY the reply text, no labels or extra lines.' + langInstruction;
+      try {
+        var fr; var fd;
+        if (cfg.format === 'anthropic') {
+          fr = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'content-type':'application/json', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify({ model:cfg.model, max_tokens:120, system:fallbackPrompt, messages:[{role:'user',content:question}] }) });
+          fd = await fr.json(); rawText = (fd.content&&fd.content[0]&&fd.content[0].text)||'';
+        } else {
+          fr = await fetch(cfg.baseUrl, { method:'POST', headers:{ 'Authorization':'Bearer '+apiKey, 'Content-Type':'application/json' }, body: JSON.stringify({ model:cfg.model, max_tokens:120, temperature:0.6, messages:[{role:'system',content:fallbackPrompt},{role:'user',content:question}] }) });
+          fd = await fr.json(); rawText = (fd.choices&&fd.choices[0]&&fd.choices[0].message&&fd.choices[0].message.content)||'';
+        }
+        var fallbackReply = rawText.trim() || "I'm not sure we have that, but I'd love to help you find something delicious! Feel free to browse the menu or ask me anything.";
+        console.log('[AI] Unknown fallback:', fallbackReply);
+        return { response: fallbackReply, item: null, videoUrl: '' }; // empty videoUrl → idle image, not welcome video
+      } catch(fe) {
+        console.error('[AI] Fallback call failed:', fe);
+        return { response: "I'm not sure about that one -- but our menu has some amazing options! Ask me about any dish and I'll tell you all about it.", item: null, videoUrl: '' };
+      }
     }
-    return{response:reply,item,videoUrl};
-  }catch(err){
-    console.error('[AI] Failed:',err);
-    if(quickMatch)return{response:quickMatch.name+' is a great choice! '+(quickMatch.desc||'').split('.')[0]+'.',item:quickMatch,videoUrl:resolveVideoUrl(quickMatch)};
-    return{response:"I'm not sure about that one — ask me about anything on the menu!",item:null,videoUrl:''};
+
+    return { response: responseText, item: item, videoUrl: videoUrl };
+
+  } catch(err) {
+    console.error('[AI] Failed:', err);
+    if (quickMatch) {
+      var vid = resolveVideoUrl(quickMatch);
+      return { response: quickMatch.name + ' is a great choice -- ' + quickMatch.desc.split('.')[0] + '.', item: quickMatch, videoUrl: vid };
+    }
+    return { response: "I'm not sure about that one -- ask me about anything on the menu and I'll help!", item:null, videoUrl:'' };
   }
 }
-
 
 // ==========================================
 // HEYGEN STREAMING AVATAR ENGINE
@@ -2310,7 +2484,7 @@ function ListeningScreen({transcript,onStop,thinking=false,staticImgSrc=''}){
 }
 
 // RESPONSE SCREEN
-function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback}){
+function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,onTalk,onText,onOrder,tableNum,ordered,setOrdered,avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd}){
   const useHeygen = avatarMode === 'heygen' && !heygenFallback;
   const hasItem = !!item;
   const hasVideo = !!videoUrl;
@@ -2319,21 +2493,54 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
   const idleImg = ordered ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '') : (item?.imgUrl || welcomeImgSrc || '');
 
   return h('div',{className:'main-scroll fade-in'},
-    useHeygen
-      ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
-      : h(AvatarDisplay,{
-          videoUrl:videoUrl||'',
-          posterUrl:idleImg,
-          fallbackVideoUrl:fallback,
-          staticImgSrc:idleImg,
-          height:'62vh',
-          active:hasItem,
-          loop:false,
-          idleAfter:ordered,
-          onEnded: ordered ? ()=>{
-            console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
-          } : null,
-        }),
+    h('div',{style:{position:'relative'}},
+      useHeygen
+        ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
+        : h(AvatarDisplay,{
+            videoUrl:videoUrl||'',
+            posterUrl:idleImg,
+            fallbackVideoUrl:fallback,
+            staticImgSrc:idleImg,
+            height:'62vh',
+            active:hasItem,
+            loop:false,
+            idleAfter:ordered,
+            onEnded: ordered ? ()=>{
+              console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
+            } : null,
+          }),
+      // -- Floating gold add button on avatar (only when item is showing) --
+      item&&!ordered&&h('button',{
+        onClick:()=>{ if(tableNum){onOrder(item);setOrdered(true);}else{onOrder(item);} },
+        style:{
+          position:'absolute', bottom:14, right:14,
+          background:'linear-gradient(135deg,var(--gold2),var(--gold3))',
+          color:'white', border:'none', borderRadius:50,
+          padding:'9px 16px', fontSize:13, fontWeight:700,
+          cursor:'pointer', boxShadow:'0 4px 16px rgba(44,24,16,0.35)',
+          display:'flex', alignItems:'center', gap:6,
+          zIndex:10, whiteSpace:'nowrap',
+          letterSpacing:'0.2px',
+        }
+      },
+        h('div',{style:{width:16,height:16}},I.check),
+        ordered ? '✓ Added!' : (tableNum ? 'Add to Order' : 'Add to Cart')
+      ),
+      // -- Already ordered indicator --
+      item&&ordered&&h('div',{
+        style:{
+          position:'absolute', bottom:14, right:14,
+          background:'var(--green)', color:'white',
+          borderRadius:50, padding:'9px 16px',
+          fontSize:13, fontWeight:700,
+          boxShadow:'0 4px 16px rgba(26,58,42,0.4)',
+          display:'flex', alignItems:'center', gap:6,
+          zIndex:10,
+        }
+      },
+        h('div',{style:{width:16,height:16}},I.check), '✓ Added!'
+      )
+    ),
 
     // -- Response bubble -- always present when we reach this screen --
     h('div',{style:{padding:'10px 16px 0'}},
@@ -2385,6 +2592,32 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       ),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
         'Learn More ',h('div',{className:'btn-icon'},I.arrow)
+      )
+    ),
+
+    // -- Category carousel slider --
+    carouselItems&&carouselItems.length>0&&h('div',{style:{paddingTop:8}},
+      h('div',{style:{padding:'0 16px 6px',display:'flex',alignItems:'center',justifyContent:'space-between'}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:13,color:'var(--gold3)',letterSpacing:'0.5px',textTransform:'uppercase'}},carouselLabel||'Menu'),
+        h('span',{style:{fontSize:11,color:'var(--text3)'}},'scroll →')
+      ),
+      h('div',{style:{display:'flex',gap:10,overflowX:'auto',padding:'0 16px 14px',WebkitOverflowScrolling:'touch',scrollbarWidth:'none'}},
+        carouselItems.map((dish,di)=>h('div',{
+          key:dish.id||di,
+          style:{flexShrink:0,width:138,background:'white',border:'1.5px solid rgba(201,168,76,0.6)',borderRadius:14,overflow:'hidden',boxShadow:'0 4px 14px rgba(44,24,16,0.10)'}
+        },
+          dish.imgUrl
+            ? h('img',{src:dish.imgUrl,alt:dish.name,style:{width:'100%',height:88,objectFit:'cover',display:'block'}})
+            : h('div',{style:{width:'100%',height:88,background:'var(--cream2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28}},'🍽️'),
+          h('div',{style:{padding:'8px 10px 10px'}},
+            h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:12,fontWeight:700,color:'var(--text1)',lineHeight:1.3,marginBottom:2,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}},dish.name),
+            h('div',{style:{fontSize:12,color:'var(--gold3)',fontWeight:700,marginBottom:7}},'$'+dish.price),
+            h('button',{
+              onClick:()=>onCarouselAdd&&onCarouselAdd(dish),
+              style:{width:'100%',background:'var(--green)',color:'white',border:'none',borderRadius:8,padding:'7px 0',fontSize:12,fontWeight:700,cursor:'pointer',letterSpacing:'0.3px'}
+            },'+ Add')
+          )
+        ))
       )
     ),
 
@@ -2669,15 +2902,15 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOr
 
       // -- Ingredient search result → show compact dish list --
       if(ingredientMatches&&ingredientMatches.length>0){
-        setMsgs(p=>[...p,{
-          role:'assistant',
-          content:response,
-          ingredientList:ingredientMatches,
-          searchTerm,
-          msgId:Date.now()
-        }]);
-        speakReply(response);  // speak the "Here are the dishes with X" heading
-        setLoading(false);
+        setCarouselItems(ingredientMatches);
+        setCarouselLabel(searchTerm||'');
+        setAiResponse(response);
+        setSelectedItem(null);
+        setVideoUrl('');
+        setOrdered(false);
+        setScreen('response');
+        speakReply(response);
+        setThinking(false);
         return;
       }
 
@@ -4633,6 +4866,8 @@ function App(){
   const[showTakeoutCart,setShowTakeoutCart]=useState(false);
   const[pendingTakeoutItem,setPendingTakeoutItem]=useState(null);
   const[takeoutConfirmed,setTakeoutConfirmed]=useState(null);
+  const[carouselItems,setCarouselItems]=useState([]);
+  const[carouselLabel,setCarouselLabel]=useState('');
   const recRef=useRef();
 
   // Load data: Supabase first, IndexedDB fallback -- runs on every mount
@@ -5272,7 +5507,7 @@ function App(){
     
     !showAdmin&&screen==='home'&&h(HomeScreen,{menu,messages,onSpeak:()=>{forceUnlock();startListening();},onItemSelect:handleItemSelect,onCardAsk:handleCardAsk,tableNum,homeTitles:store.get('stellas_home_titles',homeTitles)}),
     !showAdmin&&screen==='listening'&&h(ListeningScreen,{transcript,onStop:stopListen,thinking,staticImgSrc:getWelcomeImage(messages)||''}),
-    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback}),
+    !showAdmin&&screen==='response'&&h(ResponseScreen,{item:selectedItem,response:aiResponse,videoUrl,welcomeVideoUrl:getWelcomeVideo(messages),welcomeImgSrc:getWelcomeImage(messages)||'',onTalk:()=>{forceUnlock();startListening();},onText:()=>setShowText(true),onOrder:placeOrder,tableNum,ordered,setOrdered,avatarMode:loadSettings().avatarMode,heygenFallback,setHeygenFallback,carouselItems,carouselLabel,onCarouselAdd:(it)=>{if(tableNum){placeOrder(it);}else{setTakeoutCart(c=>[...c,it]);showToast('✓ '+it.name+' added!');}}}),
     !showAdmin&&screen==='menu'&&h(MenuScreen,{menu,onItemSelect:handleItemSelect}),
     !showAdmin&&screen==='locations'&&h(LocationsScreen),
     !showAdmin&&screen==='myorder'&&h(MyOrderScreen,{key:orderVersion,
