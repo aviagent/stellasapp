@@ -2539,11 +2539,13 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
   const useHeygen = avatarMode === 'heygen' && !heygenFallback;
   const hasItem = !!item;
   const hasVideo = !!videoUrl;
+  const hasCarousel = !!(carouselItems&&carouselItems.length>0);
   const fallback = ordered ? '' : ((hasItem||hasVideo) ? (welcomeVideoUrl||'') : '');
-  // After order confirm: idle image = message's imgUrl (Anna confirm photo), fallback to item food photo
   const idleImg = ordered ? (item?._confirmImg || item?.imgUrl || welcomeImgSrc || '') : (item?.imgUrl || welcomeImgSrc || '');
 
   return h('div',{className:'main-scroll fade-in'},
+
+    // ── Avatar frame + ALL overlays inside one relative container ──
     h('div',{style:{position:'relative'}},
       useHeygen
         ? h(HeyGenPlayer,{text:response,onFallback:()=>{setHeygenFallback(true);}})
@@ -2556,34 +2558,94 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
             active:hasItem,
             loop:false,
             idleAfter:ordered,
-            onEnded: ordered ? ()=>{
-              console.log('[Order] Confirm video ended -- idle with image:', idleImg||'none');
-            } : null,
+            onEnded: ordered ? ()=>{ console.log('[Order] Confirm video ended'); } : null,
           }),
-      // -- Floating gold add button — bottom-RIGHT corner (name tag is bottom-left) --
-      item&&h('button',{
+
+      // -- Floating add button bottom-right (only when single item, no carousel) --
+      item&&!hasCarousel&&h('button',{
         onClick:()=>{ if(!ordered){ if(tableNum){onOrder(item);setOrdered(true);}else{onOrder(item);} } },
         style:{
           position:'absolute', bottom:14, right:14,
-          background: ordered
-            ? 'var(--green)'
-            : 'linear-gradient(135deg,var(--gold2),var(--gold3))',
+          background: ordered ? 'var(--green)' : 'linear-gradient(135deg,var(--gold2),var(--gold3))',
           color:'white', border:'none', borderRadius:50,
           padding:'9px 16px', fontSize:13, fontWeight:700,
           cursor: ordered ? 'default' : 'pointer',
           boxShadow:'0 4px 18px rgba(44,24,16,0.38)',
           display:'flex', alignItems:'center', gap:6,
-          zIndex:10, whiteSpace:'nowrap',
-          letterSpacing:'0.2px',
-          transition:'background .3s',
+          zIndex:10, whiteSpace:'nowrap', transition:'background .3s',
         }
       },
         h('div',{style:{width:15,height:15,flexShrink:0}},I.check),
         ordered ? '✓ Added!' : (tableNum ? 'Add to Order' : 'Add to Cart')
+      ),
+
+      // ── CAROUSEL — absolute overlay pinned to bottom of avatar, like name tag ──
+      hasCarousel&&h('div',{style:{
+        position:'absolute',
+        bottom:0, left:0, right:0,
+        zIndex:9,
+        // Dark gradient fade so cards are readable over the photo
+        background:'linear-gradient(to top, rgba(15,30,20,0.96) 0%, rgba(15,30,20,0.75) 65%, transparent 100%)',
+        paddingTop:36,
+        paddingBottom:10,
+      }},
+        // Label + scroll hint
+        h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px 7px'}},
+          h('div',{style:{
+            fontFamily:"'Playfair Display',serif",
+            fontSize:14, color:'var(--gold2)',
+            fontWeight:700, letterSpacing:'0.3px',
+          }}, carouselLabel||'Menu'),
+          carouselItems.length>2&&h('span',{style:{fontSize:11,color:'rgba(255,255,255,0.5)'}},'swipe ›')
+        ),
+        // Scrollable card row
+        h('div',{style:{
+          display:'flex', gap:8,
+          overflowX:'auto',
+          padding:'0 14px 2px',
+          WebkitOverflowScrolling:'touch',
+          scrollbarWidth:'none',
+          msOverflowStyle:'none',
+        }},
+          carouselItems.map((dish,di)=>h('div',{
+            key:dish.id||di,
+            style:{
+              flexShrink:0, width:112,
+              background:'rgba(255,255,255,0.96)',
+              border:'1.5px solid rgba(201,168,76,0.65)',
+              borderRadius:11,
+              overflow:'hidden',
+              boxShadow:'0 4px 18px rgba(0,0,0,0.4)',
+            }
+          },
+            dish.imgUrl
+              ? h('img',{src:dish.imgUrl,alt:dish.name,style:{width:'100%',height:72,objectFit:'cover',display:'block'}})
+              : h('div',{style:{width:'100%',height:72,background:'var(--cream2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}},'🍽️'),
+            h('div',{style:{padding:'6px 8px 8px'}},
+              h('div',{style:{
+                fontFamily:"'Playfair Display',serif",
+                fontSize:11, fontWeight:700, color:'var(--text1)',
+                lineHeight:1.3, marginBottom:2,
+                overflow:'hidden', display:'-webkit-box',
+                WebkitLineClamp:2, WebkitBoxOrient:'vertical'
+              }}, dish.name),
+              h('div',{style:{fontSize:11,color:'var(--gold3)',fontWeight:700,marginBottom:5}},'$'+dish.price),
+              h('button',{
+                onClick:()=>onCarouselAdd&&onCarouselAdd(dish),
+                style:{
+                  width:'100%', background:'var(--green)', color:'white',
+                  border:'none', borderRadius:7, padding:'5px 0',
+                  fontSize:11, fontWeight:700, cursor:'pointer',
+                  fontFamily:"'Lato',sans-serif",
+                }
+              },'+ Add')
+            )
+          ))
+        )
       )
     ),
 
-    // -- Response bubble -- always present when we reach this screen --
+    // -- Response bubble --
     h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'bubble',style:{textAlign:'center'}},
         h('p',{style:{fontSize:14,color:'var(--text2)',lineHeight:1.65}},
@@ -2592,8 +2654,8 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       )
     ),
 
-    // -- Item card --
-    item&&h('div',{style:{padding:'10px 16px 0'}},
+    // -- Single item card (only when no carousel) --
+    item&&!hasCarousel&&h('div',{style:{padding:'10px 16px 0'}},
       h('div',{className:'glass',style:{display:'flex',gap:12,padding:14}},
         item.imgUrl
           ? h('img',{src:item.imgUrl,alt:item.name,style:{width:84,height:84,borderRadius:12,objectFit:'cover',flexShrink:0,boxShadow:'0 3px 12px rgba(0,0,0,.15)'}})
@@ -2606,60 +2668,26 @@ function ResponseScreen({item,response,videoUrl,welcomeVideoUrl,welcomeImgSrc,on
       )
     ),
 
-    // -- Order button (table mode) --
-    item&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button table mode (no carousel) --
+    item&&!hasCarousel&&tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);setOrdered(true);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      },
-        h('div',{className:'btn-icon'},I.check),
-        ordered?'Ordered! ✓':'Order to Table'
-      ),
+      }, h('div',{className:'btn-icon'},I.check), ordered?'Ordered! ✓':'Order to Table'),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
-      )
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
     ),
 
-    // -- Order button (takeout mode) --
-    item&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
+    // -- Order button takeout mode (no carousel) --
+    item&&!hasCarousel&&!tableNum&&h('div',{style:{padding:'10px 16px 0',display:'flex',gap:10}},
       h('button',{
         onClick:()=>{onOrder(item);},
         className:`btn ${ordered?'btn-green':'btn-gold'}`,
         style:{flex:1,fontSize:14,padding:'12px'}
-      },
-        h('div',{className:'btn-icon'},I.check),
-        ordered?'Added! ✓':'Add to Order'
-      ),
+      }, h('div',{className:'btn-icon'},I.check), ordered?'Added! ✓':'Add to Order'),
       h('button',{className:'btn btn-gold',style:{flex:1,fontSize:14,padding:'12px'}},
-        'Learn More ',h('div',{className:'btn-icon'},I.arrow)
-      )
-    ),
-
-    // -- Category carousel slider --
-    carouselItems&&carouselItems.length>0&&h('div',{style:{paddingTop:8}},
-      h('div',{style:{padding:'0 16px 6px',display:'flex',alignItems:'center',justifyContent:'space-between'}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:13,color:'var(--gold3)',letterSpacing:'0.5px',textTransform:'uppercase'}},carouselLabel||'Menu'),
-        h('span',{style:{fontSize:11,color:'var(--text3)'}},'scroll →')
-      ),
-      h('div',{style:{display:'flex',gap:10,overflowX:'auto',padding:'0 16px 14px',WebkitOverflowScrolling:'touch',scrollbarWidth:'none'}},
-        carouselItems.map((dish,di)=>h('div',{
-          key:dish.id||di,
-          style:{flexShrink:0,width:138,background:'white',border:'1.5px solid rgba(201,168,76,0.6)',borderRadius:14,overflow:'hidden',boxShadow:'0 4px 14px rgba(44,24,16,0.10)'}
-        },
-          dish.imgUrl
-            ? h('img',{src:dish.imgUrl,alt:dish.name,style:{width:'100%',height:88,objectFit:'cover',display:'block'}})
-            : h('div',{style:{width:'100%',height:88,background:'var(--cream2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28}},'🍽️'),
-          h('div',{style:{padding:'8px 10px 10px'}},
-            h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:12,fontWeight:700,color:'var(--text1)',lineHeight:1.3,marginBottom:2,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}},dish.name),
-            h('div',{style:{fontSize:12,color:'var(--gold3)',fontWeight:700,marginBottom:7}},'$'+dish.price),
-            h('button',{
-              onClick:()=>onCarouselAdd&&onCarouselAdd(dish),
-              style:{width:'100%',background:'var(--green)',color:'white',border:'none',borderRadius:8,padding:'7px 0',fontSize:12,fontWeight:700,cursor:'pointer',letterSpacing:'0.3px'}
-            },'+ Add')
-          )
-        ))
-      )
+        'Learn More ',h('div',{className:'btn-icon'},I.arrow))
     ),
 
     // -- Talk / Text buttons --
@@ -5032,17 +5060,35 @@ function App(){
           }
         };
 
+        let _retries=0;
         r.onerror=e=>{
-          handled=true;
           console.warn('[Voice] Error:',e.error);
           if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+            handled=true;
             setScreen('home');
             showToast('Mic permission needed -- tap Allow when prompted');
+          } else if(e.error==='aborted'&&_retries<2){
+            // iOS fires aborted immediately on first tap -- silent retry
+            _retries++;
+            console.log('[Voice] Aborted, retrying',_retries);
+            setTimeout(()=>{
+              try{
+                const r2=new SR();
+                r2.continuous=false;r2.interimResults=true;r2.lang='en-US';
+                recRef.current=r2;
+                r2.onresult=r.onresult;
+                r2.onerror=r.onerror;
+                r2.onend=r.onend;
+                r2.start();
+              }catch(e2){handled=true;setScreen('home');}
+            },350);
           } else if(e.error==='no-speech'){
-            setScreen('home'); // silent fail, don't toast
-          } else {
+            handled=true;
             setScreen('home');
-            showToast('Mic issue: '+e.error+' -- try again or use text chat');
+          } else {
+            handled=true;
+            setScreen('home');
+            showToast('Mic unavailable — try again or use text chat');
           }
         };
 
