@@ -855,7 +855,7 @@ function matchCategory(question, menu) {
     'handheld','handhelds','burger','burgers','sandwich','sandwiches','wrap','wraps','taco','tacos',
     'kids','kids menu','children',
     'gluten free','gluten-free','dairy free','vegan','vegetarian','plant based','plant-based',
-    'what do you have','what is on the menu','show me','what are your','what\'s on',
+    'what do you have','what is on the menu','show me','what are your',"what's on",
     'full menu','everything','all items','whole menu'
   ];
 
@@ -1094,13 +1094,46 @@ function matchMessage(question, messages) {
 
 // ==========================================
 // GLOBAL MENU TRIGGER SCANNER
-// Scans ALL menu items' triggers against the question.
-// This fires even when no item is currently selected (e.g. from home screen).
-// First keyword match across any item wins.
+// Smarter matching: word-boundary checks, noise guards, longest-phrase-wins.
 // ==========================================
+
+// Phrases that signal a browsing/category/ingredient question — block triggers
+const TRIGGER_NOISE_GUARDS = [
+  'anything with','dishes with','items with','do you have anything',
+  'what has','what contains','what can i','what do you have','what have you got',
+  'show me all','show me the menu','full menu','whole menu','all items',
+  'what are your','what kind of','what types of','do you have any',
+  'allergic','allergy','vegan','vegetarian','gluten','dairy free',
+  'can i see your','tell me about your','how much is',"what's on",
+  'what is on the menu','anything else','got any',
+];
+
+// Word-boundary match: single-word phrases require real boundaries so
+// "burger" doesn't match inside "hamburger" or "I'm not a chicken"
+function triggerPhraseMatches(phrase, q) {
+  // Multi-word phrases: substring match is specific enough
+  if (phrase.indexOf(" ") !== -1) return q.indexOf(phrase) !== -1;
+  // Single word: pad both sides with spaces for boundary check
+  var padded = " " + q + " ";
+  var p1 = " " + phrase + " ";
+  var p2 = " " + phrase + ",";
+  var p3 = " " + phrase + ".";
+  var p4 = " " + phrase + "?";
+  var p5 = " " + phrase + "!";
+  return padded.indexOf(p1) !== -1 || padded.indexOf(p2) !== -1 ||
+         padded.indexOf(p3) !== -1 || padded.indexOf(p4) !== -1 ||
+         padded.indexOf(p5) !== -1;
+}
+
 function matchAnyMenuTrigger(question, menu) {
   if (!menu || !menu.length) return null;
   const q = question.toLowerCase().trim();
+
+  // If it sounds like a browsing question, don't hijack it with a trigger
+  if (TRIGGER_NOISE_GUARDS.some(g => q.includes(g))) {
+    console.log('[Trigger] Noise guard blocked:', q);
+    return null;
+  }
 
   let bestMatch = null;
   let bestWordCount = 0;
@@ -1125,9 +1158,13 @@ function matchAnyMenuTrigger(question, menu) {
 
     for (let ti=0; ti<allTriggers.length; ti++) {
       const t = allTriggers[ti];
-      if (!t.phrase || !q.includes(t.phrase)) continue;
+      if (!t.phrase) continue;
+      if (!triggerPhraseMatches(t.phrase, q)) continue;
       const wordCount = t.phrase.split(/\s+/).length;
+      // Skip single-word triggers that are 3 chars or less — too collision-prone
+      if (wordCount === 1 && t.phrase.length <= 3) continue;
       console.log('[Trigger] Candidate:', t.phrase, '| words:', wordCount, '| item:', item.name);
+      // Longer phrase wins (most specific match)
       if (wordCount > bestWordCount) {
         bestWordCount = wordCount;
         bestMatch = {item:item, phrase:t.phrase, type:t.type, videoFilename:t.videoFilename};
@@ -1164,12 +1201,15 @@ function matchFAQ(question, faq) {
   }
   return bestScore >= 2 ? best : null;
 }
-// Scans all triggers for a menu item. First keyword match wins.
+// Scans all triggers for a menu item. Longest phrase + word-boundary match wins.
 // Backwards-compatible with old flat triggerKeywords/triggerType fields.
 // ==========================================
 function matchMenuItemTrigger(question, item) {
   if (!item) return null;
   const q = question.toLowerCase().trim();
+
+  // Same noise guard — don't let context triggers fire on browsing questions
+  if (TRIGGER_NOISE_GUARDS.some(g => q.includes(g))) return null;
 
   let bestMatch = null;
   let bestPhraseLen = 0;
@@ -1180,7 +1220,9 @@ function matchMenuItemTrigger(question, item) {
       if (!tr.keywords) continue;
       const phrases = tr.keywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
       for (const phrase of phrases) {
-        if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
+        if (!phrase || phrase.length <= bestPhraseLen) continue;
+        if (phrase.split(/\s+/).length === 1 && phrase.length <= 3) continue; // skip tiny words
+        if (triggerPhraseMatches(phrase, q)) {
           bestPhraseLen = phrase.length;
           bestMatch = { item, phrase, type: tr.action || 'item-request', videoFilename: tr.videoFilename || '' };
         }
@@ -1197,7 +1239,9 @@ function matchMenuItemTrigger(question, item) {
   if (!item.triggerKeywords) return null;
   const phrases = item.triggerKeywords.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
   for (const phrase of phrases) {
-    if (phrase && q.includes(phrase) && phrase.length > bestPhraseLen) {
+    if (!phrase || phrase.length <= bestPhraseLen) continue;
+    if (phrase.split(/\s+/).length === 1 && phrase.length <= 3) continue;
+    if (triggerPhraseMatches(phrase, q)) {
       bestPhraseLen = phrase.length;
       bestMatch = { item, phrase, type: item.triggerType || 'item-request', videoFilename: '' };
     }
@@ -2765,7 +2809,7 @@ function parseQty(text) {
 }
 
 // TEXT CHAT MODAL
-function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
+function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,onCarousel,tableNum,onOrder,onAddToCart,activeItem,selectedItem,onItemSelect}){
   const[msgs,setMsgs]=useState([{role:'assistant',content:"Hi! I'm Anna \uD83D\uDC4B What can I help you with today?"}]);
   const[inp,setInp]=useState('');
   const[loading,setLoading]=useState(false);
@@ -2969,17 +3013,13 @@ function TextChatModal({menu,messages=[],faq=[],onClose,onNavigate,tableNum,onOr
       console.log('[TextChat] AI result -- item:',item?.name||'none','| video:',videoUrl||'none','| orderIntent:',orderIntent,'| ingredientMatches:',ingredientMatches?.length||0);
       if(noKey){setMsgs(p=>[...p,{role:'assistant',content:response}]);setLoading(false);return;}
 
-      // -- Ingredient search result → show compact dish list --
+      // -- Ingredient/category search result → close chat, show carousel on response screen --
       if(ingredientMatches&&ingredientMatches.length>0){
-        setCarouselItems(ingredientMatches);
-        setCarouselLabel(searchTerm||'');
-        setAiResponse(response);
-        setSelectedItem(null);
-        setVideoUrl('');
-        setOrdered(false);
-        setScreen('response');
-        speakReply(response);
-        setThinking(false);
+        setLoading(false);
+        if(onCarousel){
+          onCarousel(ingredientMatches, searchTerm||'', response||"Here's what we have!");
+        }
+        onClose();
         return;
       }
 
@@ -4899,6 +4939,278 @@ function MyOrderScreen({onViewOrder}){
   );
 }
 
+
+// ==========================================
+// ADMIN - CAROUSEL SETTINGS
+// Configure which items appear in the carousel, trigger phrases,
+// and display behaviour. Settings saved to localStorage.
+// ==========================================
+function AdminCarousel({menu, showToast}){
+  const KEY = 'stellas_carousel_cfg';
+  const DEF = {
+    enabled: true,
+    popupMode: 'voice',      // 'voice' | 'always'
+    style: 'overlay',        // 'overlay' | 'below'
+    showPrice: true,
+    showAddBtn: true,
+    addBtnLabel: '+ Add',
+    triggers: [],            // [{phrase, itemIds:[]}]
+    pinnedIds: [],           // always show these items regardless of query
+  };
+
+  const load = () => { try{ return {...DEF,...JSON.parse(localStorage.getItem(KEY)||'{}')}; }catch(e){ return DEF; } };
+  const [cfg, setCfg] = useState(load);
+  const [newPhrase, setNewPhrase] = useState('');
+  const [newPhraseItems, setNewPhraseItems] = useState([]);
+  const [editIdx, setEditIdx] = useState(null);
+  const [section, setSection] = useState('triggers'); // 'triggers' | 'pinned' | 'display'
+
+  function save(nextCfg){
+    const c = nextCfg || cfg;
+    localStorage.setItem(KEY, JSON.stringify(c));
+    setCfg(c);
+    showToast('✓ Carousel saved');
+  }
+  function upd(k,v){ setCfg(p => ({...p,[k]:v})); }
+
+  const visibleItems = menu.filter(i => i.visible);
+
+  // --- TRIGGER CRUD ---
+  function addTrigger(){
+    if(!newPhrase.trim()){ showToast('Enter a trigger phrase first'); return; }
+    if(!newPhraseItems.length){ showToast('Select at least one item'); return; }
+    const t = {phrase: newPhrase.trim().toLowerCase(), itemIds: newPhraseItems};
+    const next = {...cfg, triggers:[...cfg.triggers, t]};
+    save(next); setNewPhrase(''); setNewPhraseItems([]);
+  }
+  function deleteTrigger(i){
+    const next = {...cfg, triggers: cfg.triggers.filter((_,idx)=>idx!==i)};
+    save(next);
+  }
+  function toggleTriggerItem(id){
+    setNewPhraseItems(p => p.includes(id) ? p.filter(x=>x!==id) : [...p,id]);
+  }
+  function togglePinned(id){
+    const next = {...cfg, pinnedIds: cfg.pinnedIds.includes(id) ? cfg.pinnedIds.filter(x=>x!==id) : [...cfg.pinnedIds,id]};
+    save(next);
+  }
+
+  const tabStyle = active => ({
+    padding:'8px 16px', borderRadius:'8px 8px 0 0', border:'none', cursor:'pointer',
+    fontFamily:"'Lato',sans-serif", fontSize:13, fontWeight:700,
+    background: active ? 'white' : 'rgba(201,168,76,.12)',
+    color: active ? 'var(--text1)' : 'var(--text3)',
+    borderBottom: active ? '2px solid var(--gold)' : '2px solid transparent',
+  });
+
+  const pill = (label, active, onClick) => h('button',{
+    onClick, style:{
+      padding:'6px 14px', borderRadius:20, border:'1.5px solid var(--gold)', fontSize:12,
+      fontWeight:700, cursor:'pointer', fontFamily:"'Lato',sans-serif",
+      background: active ? 'var(--green)' : 'transparent',
+      color: active ? 'white' : 'var(--text2)',
+    }
+  }, label);
+
+  return h('div', null,
+
+    // Header
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Carousel Settings'),
+      h('label',{className:'tgl'},
+        h('input',{type:'checkbox',checked:cfg.enabled,onChange:e=>{ const n={...cfg,enabled:e.target.checked}; save(n); }}),
+        h('span',{className:'tgl-slider'})
+      )
+    ),
+    h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:16,lineHeight:1.5}},
+      cfg.enabled
+        ? 'Carousel is ON — scrollable cards appear over Anna\'s photo when she shows a group of items.'
+        : 'Carousel is OFF — Anna lists items in the text bubble only.'
+    ),
+
+    // Section tabs
+    h('div',{style:{display:'flex',gap:4,marginBottom:16,borderBottom:'2px solid rgba(201,168,76,.2)'}},
+      h('button',{style:tabStyle(section==='triggers'),onClick:()=>setSection('triggers')},'⚡ Triggers'),
+      h('button',{style:tabStyle(section==='pinned'),onClick:()=>setSection('pinned')},'📌 Pinned Items'),
+      h('button',{style:tabStyle(section==='display'),onClick:()=>setSection('display')},'🎨 Display')
+    ),
+
+    // ── TRIGGERS TAB ──
+    section==='triggers'&&h('div',null,
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
+        'Set phrases that trigger the carousel with specific items. When someone says that phrase, Anna shows those items as cards.'
+      ),
+
+      // Existing triggers list
+      cfg.triggers.length===0&&h('div',{style:{
+        textAlign:'center',padding:'24px 16px',background:'rgba(201,168,76,.06)',
+        borderRadius:12,border:'1.5px dashed var(--gold)',marginBottom:16,color:'var(--text3)',fontSize:13
+      }},'No triggers yet — add one below'),
+
+      cfg.triggers.map((t,i) => {
+        const items = t.itemIds.map(id => visibleItems.find(it=>it.id===id)).filter(Boolean);
+        return h('div',{key:i,className:'glass',style:{padding:14,marginBottom:10}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},
+            h('div',null,
+              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},'"'+t.phrase+'"'),
+              h('div',{style:{fontSize:11,color:'var(--text3)'}},items.length+' item'+(items.length!==1?'s':''))
+            ),
+            h('button',{onClick:()=>deleteTrigger(i),style:{background:'rgba(220,60,60,.08)',border:'1px solid rgba(220,60,60,.25)',borderRadius:8,padding:'5px 10px',fontSize:12,fontWeight:700,cursor:'pointer',color:'var(--red)',fontFamily:"'Lato',sans-serif"}},'Delete')
+          ),
+          // Item chips
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+            items.map(it=>h('div',{key:it.id,style:{
+              display:'flex',alignItems:'center',gap:6,padding:'4px 10px',
+              background:'rgba(42,90,64,.1)',borderRadius:20,fontSize:12,color:'var(--green2)'
+            }},
+              it.imgUrl&&h('img',{src:it.imgUrl,style:{width:20,height:20,borderRadius:4,objectFit:'cover'}}),
+              it.name,' · $'+it.price
+            ))
+          )
+        );
+      }),
+
+      // Add new trigger
+      h('div',{className:'glass',style:{padding:16,marginTop:8}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'+ Add Trigger'),
+
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Trigger phrase'),
+          h('input',{
+            value:newPhrase,
+            onChange:e=>setNewPhrase(e.target.value),
+            placeholder:'e.g. show me drinks, what\'s good tonight',
+            className:'field'
+          }),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:4}},'When someone says this, the carousel shows the items you pick below.')
+        ),
+
+        h('div',{className:'form-group'},
+          h('label',{className:'label'},'Items to show'),
+          h('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:8}},'Tap to select — these cards appear in the carousel for this phrase.'),
+          h('div',{style:{display:'flex',flexDirection:'column',gap:6,maxHeight:280,overflowY:'auto'}},
+            visibleItems.map(it => {
+              const selected = newPhraseItems.includes(it.id);
+              return h('div',{
+                key:it.id,
+                onClick:()=>toggleTriggerItem(it.id),
+                style:{
+                  display:'flex',alignItems:'center',gap:10,padding:'9px 12px',
+                  borderRadius:10,cursor:'pointer',border:'1.5px solid',
+                  borderColor: selected ? 'var(--green2)' : 'rgba(201,168,76,.3)',
+                  background: selected ? 'rgba(42,90,64,.08)' : 'white',
+                }
+              },
+                it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:40,height:40,borderRadius:8,objectFit:'cover',flexShrink:0}}),
+                h('div',{style:{flex:1}},
+                  h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' · '+it.name),
+                  h('div',{style:{fontSize:11,color:'var(--text3)'}},'✦ '+it.cat)
+                ),
+                h('div',{style:{
+                  width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
+                  borderColor:selected?'var(--green2)':'var(--gold)',
+                  background:selected?'var(--green2)':'transparent',
+                  display:'flex',alignItems:'center',justifyContent:'center',
+                  color:'white',fontSize:13,fontWeight:700
+                }},selected?'✓':'')
+              );
+            })
+          )
+        ),
+
+        h('button',{
+          className:'btn btn-green',
+          style:{width:'100%',marginTop:4},
+          onClick:addTrigger
+        },'Add Trigger ('+newPhraseItems.length+' item'+(newPhraseItems.length!==1?'s':'')+')')
+      )
+    ),
+
+    // ── PINNED ITEMS TAB ──
+    section==='pinned'&&h('div',null,
+      h('div',{style:{fontSize:13,color:'var(--text2)',marginBottom:14,lineHeight:1.5}},
+        'Pinned items always appear at the front of every carousel, no matter what was asked.'
+      ),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:6}},
+        visibleItems.map(it => {
+          const pinned = cfg.pinnedIds.includes(it.id);
+          return h('div',{
+            key:it.id,
+            onClick:()=>togglePinned(it.id),
+            style:{
+              display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
+              borderRadius:10,cursor:'pointer',border:'1.5px solid',
+              borderColor:pinned?'var(--green2)':'rgba(201,168,76,.3)',
+              background:pinned?'rgba(42,90,64,.08)':'white',
+            }
+          },
+            it.imgUrl&&h('img',{src:it.imgUrl,alt:it.name,style:{width:44,height:44,borderRadius:8,objectFit:'cover',flexShrink:0}}),
+            h('div',{style:{flex:1}},
+              h('div',{style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},'$'+it.price+' · '+it.name),
+              h('div',{style:{fontSize:11,color:'var(--text3)'}},'✦ '+it.cat)
+            ),
+            h('div',{style:{
+              width:22,height:22,borderRadius:'50%',border:'2px solid',flexShrink:0,
+              borderColor:pinned?'var(--green2)':'var(--gold)',
+              background:pinned?'var(--green2)':'transparent',
+              display:'flex',alignItems:'center',justifyContent:'center',
+              color:'white',fontSize:13,fontWeight:700
+            }},pinned?'📌':'')
+          );
+        })
+      ),
+      cfg.pinnedIds.length>0&&h('button',{
+        className:'btn btn-gold btn-sm',
+        style:{marginTop:12,width:'100%'},
+        onClick:()=>save({...cfg,pinnedIds:[]})
+      },'Clear all pinned')
+    ),
+
+    // ── DISPLAY TAB ──
+    section==='display'&&h('div',null,
+
+      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'When to pop up'),
+        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}},
+          pill('🎤 After voice query', cfg.popupMode==='voice', ()=>upd('popupMode','voice')),
+          pill('Always', cfg.popupMode==='always', ()=>upd('popupMode','always'))
+        ),
+        h('div',{style:{fontSize:11,color:'var(--text3)'}},
+          cfg.popupMode==='voice'
+            ? 'Carousel only pops up after spoken queries — text chat shows a list instead.'
+            : 'Carousel appears on both voice and text chat responses.'
+        )
+      ),
+
+      h('div',{className:'glass',style:{padding:16,marginBottom:14}},
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:12}},'Card content'),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            h('span',{style:{fontSize:13,color:'var(--text2)'}},'Show price on card'),
+            h('label',{className:'tgl'},
+              h('input',{type:'checkbox',checked:cfg.showPrice,onChange:e=>upd('showPrice',e.target.checked)}),
+              h('span',{className:'tgl-slider'})
+            )
+          ),
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            h('span',{style:{fontSize:13,color:'var(--text2)'}},'"+ Add" button'),
+            h('label',{className:'tgl'},
+              h('input',{type:'checkbox',checked:cfg.showAddBtn,onChange:e=>upd('showAddBtn',e.target.checked)}),
+              h('span',{className:'tgl-slider'})
+            )
+          ),
+          cfg.showAddBtn&&h('div',null,
+            h('label',{className:'label'},'Button label'),
+            h('input',{value:cfg.addBtnLabel,onChange:e=>upd('addBtnLabel',e.target.value),className:'field',placeholder:'+ Add'})
+          )
+        )
+      ),
+
+      h('button',{className:'btn btn-green',style:{width:'100%'},onClick:()=>save()},'✓ Save Display Settings')
+    )
+  );
+}
+
 // ==========================================
 // -------- MAIN APP ------------------------
 // ==========================================
@@ -5508,6 +5820,7 @@ function App(){
     {id:'takeout',label:'Takeout',icon:I.bag},
     {id:'menu',label:'Menu',icon:I.menu},
     {id:'messages',label:'Messages',icon:I.msg},
+    {id:'carousel',label:'Carousel',icon:I.promote},
     {id:'faq',label:'FAQ',icon:I.star},
     {id:'qr',label:'QR Codes',icon:I.qr},
     {id:'analytics',label:'Analytics',icon:I.star},
@@ -5579,6 +5892,7 @@ function App(){
         adminTab==='takeout'&&h(AdminTakeout,{showToast}),
         adminTab==='menu'&&h(AdminMenu,{menu,setMenu,showToast}),
         adminTab==='messages'&&h(AdminMessages,{messages,setMessages,showToast}),
+        adminTab==='carousel'&&h(AdminCarousel,{menu,showToast}),
         adminTab==='faq'&&h(AdminFAQ,{faq,setFaq,showToast}),
         adminTab==='qr'&&h(AdminQR,{tableOrders}),
         adminTab==='analytics'&&h(AdminAnalytics,{tableOrders}),
@@ -5636,7 +5950,7 @@ function App(){
       ].map(item=>h('button',{key:item.id,className:`nav-btn ${navTab===item.id?'active':''}`,onClick:()=>handleNav(item.id)},h('div',{style:{width:22,height:22}},item.icon),h('span',null,item.label)))
     ),
     
-    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
+    showText&&h(TextChatModal,{menu,messages,faq,onClose:()=>setShowText(false),onNavigate:handleTextNavigate,onCarousel:(items,label,resp)=>{setCarouselItems(items);setCarouselLabel(label||'');setAiResponse(resp||"Here's what we have!");setSelectedItem(null);setVideoUrl('');setOrdered(false);setHeygenFallback(false);setScreen('response');setNavTab('home');},tableNum,onOrder:placeOrder,onAddToCart:addToCart,activeItem,selectedItem,onItemSelect:handleItemSelect})
   );
 }
 
