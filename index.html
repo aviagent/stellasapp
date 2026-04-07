@@ -5384,7 +5384,7 @@ function App(){
         adminTab==='qr'&&h(AdminQR,{tableOrders}),
         adminTab==='analytics'&&h(AdminAnalytics,{tableOrders}),
         adminTab==='settings'&&h(AdminSettingsPanel,{showToast}),
-        adminTab==='bulk'&&h(AdminBulkImport,{showToast}),
+        adminTab==='bulk'&&h(AdminBulkImport,{showToast,setMenu,loadMenuData}),
       )
     ),
     
@@ -5487,17 +5487,26 @@ function AdminBulkImport({showToast}) {
   }
 
   function parseCSV(text){
-    const lines=text.split('\n').filter(l=>l.trim());
-    if(lines.length<2)return[];
-    const headers=parseCSVLine(lines[0]).map(h=>h.trim().toLowerCase().replace(/\s+/g,'_'));
+    // Strip BOM, normalize Windows \r\n and Mac \r line endings
+    text=text.replace(/^\uFEFF/,'').replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    const lines=text.split('\n').filter(function(l){return l.trim();});
+    if(lines.length<2){console.warn('[Bulk] CSV has fewer than 2 lines');return[];}
+    const headers=parseCSVLine(lines[0]).map(function(h){return h.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');});
+    console.log('[Bulk] CSV headers found:',headers);
     const rows=[];
-    for(let i=1;i<lines.length;i++){
+    for(var i=1;i<lines.length;i++){
       if(!lines[i].trim())continue;
       const vals=parseCSVLine(lines[i]);
       const row={};
-      headers.forEach((h,idx)=>{row[h]=(vals[idx]||'').trim();});
-      if(row.name)rows.push(row);
+      headers.forEach(function(h,idx){row[h]=(vals[idx]||'').trim();});
+      // Accept row if it has a name field (check multiple possible column names)
+      const rowName=row.name||row.item_name||row.item||'';
+      if(rowName){
+        if(!row.name)row.name=rowName; // normalize to 'name'
+        rows.push(row);
+      }
     }
+    console.log('[Bulk] Parsed',rows.length,'rows from',lines.length-1,'data lines');
     return rows;
   }
 
@@ -5627,9 +5636,23 @@ function AdminBulkImport({showToast}) {
       await new Promise(function(resolve){setTimeout(resolve,150);});
     }
     setImportProgress(100);
-    setImportStatus(ok+' imported'+(fail>0?', '+fail+' failed':'!'));
+    setImportStatus(ok+' imported'+(fail>0?', '+fail+' failed! Check console for errors.':'! Reloading menu...'));
     setImporting(false);
     showToast(ok+' items imported!');
+    // Reload menu from Supabase so new items appear immediately without page refresh
+    if(ok>0 && loadMenuData && setMenu){
+      try{
+        const freshMenu=await loadMenuData();
+        if(freshMenu&&freshMenu.length){
+          setMenu(freshMenu);
+          showToast('Menu updated — '+freshMenu.length+' total items loaded!');
+          setImportStatus(ok+' items imported and menu refreshed!');
+        }
+      }catch(e){
+        console.warn('[Bulk] Menu reload failed:',e);
+        showToast('Imported! Refresh the page to see new items.');
+      }
+    }
   }
 
   const mediaCount=Object.keys(mediaFiles).length;
