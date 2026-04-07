@@ -5444,7 +5444,7 @@ function App(){
 
 // ══════════════════════════════════════════════════════════
 // ADMIN — BULK IMPORT TAB
-// Uses the app's own sbUpsert() + menuToSB() for correct field mapping
+// Converted from stellas_bulk_uploader.html
 // ══════════════════════════════════════════════════════════
 function AdminBulkImport({showToast}) {
   const[mediaFiles,setMediaFiles]=useState({});
@@ -5461,31 +5461,35 @@ function AdminBulkImport({showToast}) {
   const fileRef=useRef();
   const csvRef=useRef();
 
-  const cfg=sbCfg();
-  const connected=!!cfg;
+  // Read SB creds from store (same keys the app uses)
+  const sbUrl=store.get('stellas_sb_url','').replace(/\/$/,'');
+  const sbKey=store.get('stellas_sb_key','');
   const sbBucket=store.get('stellas_sb_bucket','videos')||'videos';
+  const connected=!!(sbUrl&&sbKey);
 
-  async function testConn(){
-    if(!cfg){setConnStatus('Set Supabase URL & Key in Settings first');return;}
+  // ── Test connection ──
+  async function testConnection(){
+    if(!connected){setConnStatus('⚠️ No credentials — set them in Settings tab');return;}
     setConnStatus('Testing...');
     try{
-      const r=await fetch(cfg.url+'/rest/v1/menu_items?limit=1',{
-        headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key}
+      const r=await fetch(sbUrl+'/rest/v1/menu_items?limit=1',{
+        headers:{'apikey':sbKey,'Authorization':'Bearer '+sbKey}
       });
-      setConnStatus(r.ok?'Connected! Ready to import.':'Error '+r.status);
-    }catch(e){setConnStatus('Error: '+e.message);}
+      if(r.ok) setConnStatus('✅ Connected! menu_items table found.');
+      else setConnStatus('❌ Error '+r.status+' — check your credentials in Settings');
+    }catch(e){setConnStatus('❌ '+e.message);}
   }
 
+  // ── CSV parser ──
   function parseCSVLine(line){
-    const r=[];let cur='';let inQ=false;
+    const result=[];let cur='';let inQ=false;
     for(let i=0;i<line.length;i++){
       if(line[i]==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
-      else if(line[i]===','&&!inQ){r.push(cur);cur='';}
+      else if(line[i]===','&&!inQ){result.push(cur);cur='';}
       else cur+=line[i];
     }
-    r.push(cur);return r;
+    result.push(cur);return result;
   }
-
   function parseCSV(text){
     const lines=text.split('\n').filter(l=>l.trim());
     if(lines.length<2)return[];
@@ -5494,40 +5498,39 @@ function AdminBulkImport({showToast}) {
     for(let i=1;i<lines.length;i++){
       if(!lines[i].trim())continue;
       const vals=parseCSVLine(lines[i]);
-      const row={};
-      headers.forEach((h,idx)=>{row[h]=(vals[idx]||'').trim();});
+      const row={};headers.forEach((h,idx)=>{row[h]=(vals[idx]||'').trim();});
       if(row.name)rows.push(row);
     }
     return rows;
   }
 
+  // ── Template downloads ──
   function downloadTemplate(){
     const hdr='name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible';
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([hdr+'\n'],{type:'text/csv'}));
     a.download='stellas_menu_template.csv';a.click();
   }
-
   function downloadExample(){
-    const rows=[
+    const csv=[
       'name,price,category,description,ingredients,image_filename,video_filename,trigger_keywords,trigger_action,visible',
-      'Margherita Pizza,18,Mains,Classic pizza with San Marzano tomatoes and fresh mozzarella,flour|tomato|mozzarella|basil,margherita.jpg,margherita.mp4,"tell me about the margherita, show me the pizza",item-request,true',
-      'Pepperoni Pizza,21,Mains,House sauce with pepperoni and mozzarella,flour|tomato|mozzarella|pepperoni,pepperoni.jpg,,"pepperoni pizza",item-request,true',
-      'Tiramisu,12,Desserts,Classic tiramisu with mascarpone and espresso-soaked ladyfingers,mascarpone|espresso|ladyfingers|cocoa,tiramisu.jpg,tiramisu.mp4,"show me desserts, tiramisu",item-request,true',
-    ];
+      'Margherita Pizza,18,Mains,Classic pizza with San Marzano tomatoes and mozzarella,flour|tomato|mozzarella|basil,margherita.jpg,margherita.mp4,"tell me about the margherita, show me pizza, what pizzas do you have",item-request,true',
+      'Pepperoni Pizza,21,Mains,House sauce with premium pepperoni and stretched mozzarella,flour|tomato|mozzarella|pepperoni,pepperoni.jpg,,"pepperoni pizza, show me pepperoni",item-request,true',
+      'Tiramisu,12,Desserts,Classic tiramisu with mascarpone and espresso-soaked ladyfingers,mascarpone|espresso|ladyfingers|cocoa,tiramisu.jpg,tiramisu.mp4,"show me desserts, tiramisu, something sweet",item-request,true',
+    ].join('\n');
     const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
     a.download='stellas_menu_example.csv';a.click();
   }
 
+  // ── Media handling ──
   function handleMediaFiles(files){
     const nf={...mediaFiles};
-    for(const f of files)nf[f.name]=f;
+    for(const f of files) nf[f.name]=f;
     setMediaFiles(nf);
   }
-
   async function uploadAllMedia(){
-    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
+    if(!connected){showToast('⚠️ Set Supabase credentials in Settings first');return;}
     const files=Object.values(mediaFiles);
     if(!files.length){showToast('No files selected');return;}
     setUploadingMedia(true);
@@ -5537,48 +5540,49 @@ function AdminBulkImport({showToast}) {
       setMediaStatus('Uploading '+f.name+' ('+(i+1)+'/'+files.length+')...');
       setMediaProgress(Math.round(i/files.length*100));
       try{
-        const res=await fetch(cfg.url+'/storage/v1/object/'+sbBucket+'/'+encodeURIComponent(f.name),{
+        const res=await fetch(sbUrl+'/storage/v1/object/'+sbBucket+'/'+encodeURIComponent(f.name),{
           method:'POST',
-          headers:{'apikey':cfg.key,'Authorization':'Bearer '+cfg.key,'Content-Type':f.type,'x-upsert':'true'},
+          headers:{'apikey':sbKey,'Authorization':'Bearer '+sbKey,'Content-Type':f.type,'x-upsert':'true'},
           body:f
         });
         if(res.ok||res.status===200){
-          uploaded[f.name]=cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(f.name);
-        } else {
+          uploaded[f.name]=sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(f.name);
+        }else{
           const t=await res.text();
           console.error('[Bulk] Upload failed:',f.name,res.status,t);
         }
-      }catch(e){console.warn('[Bulk] Upload error:',f.name,e.message);}
+      }catch(e){console.warn('[Bulk] Upload error:',f.name,e);}
     }
     setUploadedMedia(uploaded);
     setMediaProgress(100);
     const n=Object.keys(uploaded).length;
-    setMediaStatus(n+' file'+(n!==1?'s':'')+' uploaded!');
+    setMediaStatus('✅ '+n+' file'+(n!==1?'s':'')+' uploaded!');
     setUploadingMedia(false);
-    showToast(n+' files uploaded!');
+    showToast('✅ '+n+' files uploaded to Supabase!');
   }
 
+  // ── CSV handling ──
   function handleCSV(file){
     if(!file)return;
     const reader=new FileReader();
-    reader.onload=function(e){
+    reader.onload=e=>{
       const rows=parseCSV(e.target.result);
-      if(!rows.length){showToast('No valid rows found in CSV');return;}
+      if(!rows.length){showToast('⚠️ No valid rows found in CSV');return;}
       setParsedRows(rows);
       setRowStatuses({});
       setImportProgress(0);
       setImportStatus('');
-      showToast(rows.length+' items parsed and ready to import');
+      showToast('✓ '+rows.length+' items parsed and ready to import');
     };
     reader.readAsText(file);
   }
 
+  // ── Import to Supabase ──
   async function importAll(){
-    if(!cfg){showToast('Set Supabase credentials in Settings first');return;}
+    if(!connected){showToast('⚠️ Set Supabase credentials in Settings first');return;}
     if(!parsedRows.length){showToast('Upload a CSV first');return;}
     setImporting(true);
-    const statuses={};
-    let ok=0,fail=0;
+    const statuses={};let ok=0,fail=0;
     for(let i=0;i<parsedRows.length;i++){
       const row=parsedRows[i];
       statuses[i]='importing';
@@ -5590,7 +5594,7 @@ function AdminBulkImport({showToast}) {
         const vidFile=row.video_filename||row.video||'';
         const imgUrl=uploadedMedia[imgFile]
           ||(imgFile&&imgFile.startsWith('http')?imgFile:'')
-          ||(imgFile?cfg.url+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(imgFile):'')
+          ||(imgFile?sbUrl+'/storage/v1/object/public/'+sbBucket+'/'+encodeURIComponent(imgFile):'')
           ||row.img_url||'';
         const vidUrl=uploadedMedia[vidFile]
           ||(vidFile&&vidFile.startsWith('http')?vidFile:'')
@@ -5598,199 +5602,231 @@ function AdminBulkImport({showToast}) {
         const trigKw=row.trigger_keywords||'';
         const trigAction=row.trigger_action||'item-request';
         const triggers=trigKw?[{keywords:trigKw,action:trigAction,videoFilename:vidFile}]:[];
-        // Build using JS app's field names so menuToSB() maps them correctly
         const item={
-          id:Date.now()*100+i,
+          id:Date.now()+i,
           name:row.name,
           price:parseFloat(row.price)||0,
           cat:row.category||row.cat||'Mains',
           desc:row.description||row.desc||'',
           ing:(row.ingredients||row.ing||'').replace(/\|/g,', '),
-          imgUrl:imgUrl,
-          videoUrl:vidUrl,
-          videoFilename:vidFile,
+          img_url:imgUrl,
+          video_url:vidUrl,
+          video_filename:vidFile,
           visible:row.visible!=='false',
-          triggerKeywords:trigKw,
-          triggerType:trigAction,
+          trigger_keywords:trigKw,
+          trigger_type:trigAction,
           triggers:triggers,
+          sort_order:i,
+          updated_at:new Date().toISOString()
         };
-        // Use the app's own sbUpsert+menuToSB — exact same path as saving from Menu tab
-        await sbUpsert('menu_items', menuToSB(item));
-        ok++;
-        statuses[i]='ok';
+        const res=await fetch(sbUrl+'/rest/v1/menu_items',{
+          method:'POST',
+          headers:{
+            'apikey':sbKey,'Authorization':'Bearer '+sbKey,
+            'Content-Type':'application/json',
+            'Prefer':'resolution=merge-duplicates,return=minimal'
+          },
+          body:JSON.stringify(item)
+        });
+        if(res.ok||res.status===201){ok++;statuses[i]='ok';}
+        else{
+          const t=await res.text();
+          console.error('[Bulk] Import fail:',row.name,res.status,t);
+          fail++;statuses[i]='fail';
+        }
       }catch(e){
-        console.error('[Bulk] Failed:',row.name,e.message);
-        fail++;
-        statuses[i]='fail';
+        console.error('[Bulk] Import error:',row.name,e);
+        fail++;statuses[i]='fail';
       }
       setRowStatuses({...statuses});
-      await new Promise(function(resolve){setTimeout(resolve,150);});
+      await new Promise(r=>setTimeout(r,80));
     }
     setImportProgress(100);
-    setImportStatus(ok+' imported'+(fail>0?', '+fail+' failed':'!'));
+    setImportStatus('Done! ✅ '+ok+' imported'+(fail>0?', '+fail+' failed':'!'));
     setImporting(false);
-    showToast(ok+' items imported!');
+    showToast(ok+' items imported to Supabase!');
   }
 
   const mediaCount=Object.keys(mediaFiles).length;
-  const dropStyle={border:'2px dashed var(--gold)',borderRadius:14,padding:24,textAlign:'center',cursor:'pointer',background:'rgba(201,168,76,.04)'};
 
-  function ProgBar({pct}){
+  // ── Shared styles ──
+  const dropBase={
+    border:'2px dashed var(--gold)',borderRadius:14,padding:24,
+    textAlign:'center',cursor:'pointer',transition:'all .2s',
+    background:'rgba(201,168,76,.04)'
+  };
+  function ProgressBar({pct}){
     return h('div',{style:{height:6,background:'rgba(201,168,76,.2)',borderRadius:3,overflow:'hidden',margin:'6px 0'}},
-      h('div',{style:{height:'100%',background:'linear-gradient(to right,var(--green2),var(--gold))',width:pct+'%',transition:'width .3s'}})
+      h('div',{style:{height:'100%',background:'linear-gradient(to right,var(--green2),var(--gold))',borderRadius:3,width:pct+'%',transition:'width .3s'}})
     );
   }
-
-  function SPill({s}){
+  function StatusPill({s}){
     if(!s)return h('span',{style:{fontSize:11,color:'var(--text3)'}},'Ready');
-    if(s==='importing')return h('span',{style:{fontSize:11,background:'rgba(201,168,76,.15)',color:'var(--gold3)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'...');
-    if(s==='ok')return h('span',{style:{fontSize:11,background:'rgba(42,90,64,.12)',color:'var(--green2)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Saved');
-    return h('span',{style:{fontSize:11,background:'rgba(220,60,60,.1)',color:'var(--red)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'Failed');
+    if(s==='importing')return h('span',{style:{fontSize:11,background:'rgba(201,168,76,.15)',color:'var(--gold3)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'⏳');
+    if(s==='ok')return h('span',{style:{fontSize:11,background:'rgba(42,90,64,.12)',color:'var(--green2)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'✅ Saved');
+    return h('span',{style:{fontSize:11,background:'rgba(220,60,60,.1)',color:'var(--red)',padding:'2px 8px',borderRadius:20,fontWeight:700}},'❌ Failed');
+  }
+  function Pill({text,color}){
+    const colors={gold:'rgba(201,168,76,.15)',navy:'rgba(42,90,64,.1)',blue:'rgba(26,86,219,.1)'};
+    const text_colors={gold:'var(--gold3)',navy:'var(--green2)',blue:'#1a56db'};
+    return h('span',{style:{fontSize:10,background:colors[color]||colors.gold,color:text_colors[color]||text_colors.gold,padding:'2px 7px',borderRadius:20}},text);
   }
 
   return h('div',null,
 
+    // ── Header ──
     h('div',{style:{marginBottom:16}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'Bulk Menu Import'),
-      h('div',{style:{fontSize:12,color:'var(--text3)',marginTop:2}},'Upload a CSV + images/videos to populate your menu at once')
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:20,color:'var(--text1)'}},'📦 Bulk Menu Import'),
+      h('div',{style:{fontSize:12,color:'var(--text3)',marginTop:2}},'Upload a CSV + images/videos to populate your entire menu at once')
     ),
 
-    h('div',{className:'glass',style:{padding:12,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}},
+    // ── Connection status ──
+    h('div',{className:'glass',style:{padding:14,marginBottom:14,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}},
       h('div',null,
         connected
-          ? h('span',{style:{fontSize:13,color:'var(--green2)',fontWeight:700}},'Supabase connected')
-          : h('span',{style:{fontSize:13,color:'var(--red)'}},'No Supabase credentials — go to Settings tab'),
-        connStatus&&h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:3}},connStatus)
+          ? h('span',{style:{fontSize:13,color:'var(--green2)',fontWeight:700}},'✅ Supabase connected')
+          : h('span',{style:{fontSize:13,color:'var(--red)'}},'⚠️ No Supabase credentials — set them in the Settings tab'),
+        connStatus&&h('div',{style:{fontSize:12,color:'var(--text3)',marginTop:3}},connStatus)
       ),
-      h('button',{className:'btn btn-gold btn-sm',onClick:testConn},'Test Connection')
+      h('button',{className:'btn btn-gold btn-sm',onClick:testConnection},'🔌 Test Connection')
     ),
 
+    // ── ① Template ──
     h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Download CSV Template'),
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--text1)',marginBottom:8}},'① Download CSV Template'),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))',gap:6,marginBottom:12}},
-        [{n:'name',d:'Required'},{n:'price',d:'Required'},{n:'category',d:'Starters, Mains...'},
-         {n:'description',d:'Item description'},{n:'ingredients',d:'Use | between items'},
-         {n:'image_filename',d:'e.g. pizza.jpg'},{n:'video_filename',d:'e.g. pizza.mp4'},
-         {n:'trigger_keywords',d:'comma-separated'},{n:'trigger_action',d:'item-request'},
-         {n:'visible',d:'true or false'}
-        ].map(function(c){
-          return h('div',{key:c.n,style:{background:'rgba(42,90,64,.08)',border:'1px solid rgba(42,90,64,.2)',borderRadius:8,padding:'5px 8px'}},
-            h('div',{style:{fontSize:11,fontWeight:700,color:'var(--green2)'}},c.n),
-            h('div',{style:{fontSize:10,color:'var(--text3)',marginTop:1}},c.d)
-          );
-        })
+        [
+          {n:'name',d:'Required *'},{n:'price',d:'Required *'},
+          {n:'category',d:'Starters, Mains…'},{n:'description',d:'Item description'},
+          {n:'ingredients',d:'pipe-separated'},{n:'image_filename',d:'e.g. pizza.jpg'},
+          {n:'video_filename',d:'e.g. pizza.mp4'},{n:'trigger_keywords',d:'comma-separated'},
+          {n:'trigger_action',d:'item-request/order-add'},{n:'visible',d:'true or false'},
+        ].map(c=>h('div',{key:c.n,style:{background:'rgba(42,90,64,.08)',border:'1px solid rgba(42,90,64,.2)',borderRadius:8,padding:'5px 8px'}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'var(--green2)'}},' ',c.n),
+          h('div',{style:{fontSize:10,color:'var(--text3)',marginTop:1}},c.d)
+        ))
       ),
       h('div',{style:{display:'flex',gap:10,flexWrap:'wrap'}},
-        h('button',{className:'btn btn-green btn-sm',onClick:downloadTemplate},'Download Blank Template'),
-        h('button',{className:'btn btn-gold btn-sm',onClick:downloadExample},'Download Example (3 items)')
+        h('button',{className:'btn btn-green btn-sm',onClick:downloadTemplate},'⬇️ Blank Template'),
+        h('button',{className:'btn btn-gold btn-sm',onClick:downloadExample},'📋 Example (3 items)')
       )
     ),
 
+    // ── ② Media Upload ──
     h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:4}},' Upload Images & Videos'),
-      h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:10}},'Select all files at once. Max 50MB per file on Supabase free tier.'),
-      h('div',{style:dropStyle,
-        onClick:function(){if(fileRef.current)fileRef.current.click();},
-        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
-        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
-        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';handleMediaFiles(e.dataTransfer.files);}
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--text1)',marginBottom:4}},'② Upload Images & Videos'),
+      h('div',{style:{fontSize:12,color:'var(--text3)',marginBottom:10}},'Select all files at once — uploads to Supabase Storage. Up to 50MB/file on free tier.'),
+      h('div',{
+        style:dropBase,
+        onClick:()=>fileRef.current&&fileRef.current.click(),
+        onDragOver:e=>{e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
+        onDragLeave:e=>e.currentTarget.style.background='rgba(201,168,76,.04)',
+        onDrop:e=>{e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';handleMediaFiles(e.dataTransfer.files);}
       },
-        h('div',{style:{fontSize:28,marginBottom:4}},'Files'),
+        h('div',{style:{fontSize:30,marginBottom:4}},'📁'),
         h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
           mediaCount>0?mediaCount+' file'+(mediaCount!==1?'s':'')+' selected':'Click or drag files here'
         ),
-        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'Images: .jpg .png .webp  Videos: .mp4 .mov')
+        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'Images: .jpg .png .webp · Videos: .mp4 .mov')
       ),
       h('input',{ref:fileRef,type:'file',accept:'image/*,video/mp4,video/quicktime',multiple:true,
-        style:{display:'none'},
-        onChange:function(e){handleMediaFiles(e.target.files);}}),
-      mediaCount>0&&h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginTop:8}},
-        Object.keys(mediaFiles).map(function(name){
-          return h('div',{key:name,style:{
-            background:'white',
-            border:'1px solid '+(uploadedMedia[name]?'var(--green2)':'rgba(201,168,76,.3)'),
-            borderRadius:8,padding:'3px 10px',fontSize:11,color:'var(--text2)',display:'flex',alignItems:'center',gap:5
-          }},
-            mediaFiles[name].type.startsWith('image/')?'IMG':'VID',
-            ' ',name,
-            uploadedMedia[name]?' OK':''
-          );
-        })
+        style:{display:'none'},onChange:e=>handleMediaFiles(e.target.files)}),
+
+      mediaCount>0&&h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginTop:10}},
+        Object.keys(mediaFiles).map(name=>h('div',{key:name,style:{
+          background:'white',border:'1px solid '+(uploadedMedia[name]?'var(--green2)':'rgba(201,168,76,.3)'),
+          borderRadius:8,padding:'3px 10px',fontSize:11,color:'var(--text2)',
+          display:'flex',alignItems:'center',gap:5
+        }},
+          mediaFiles[name].type.startsWith('image/')?'🖼️':'🎬',
+          name,
+          uploadedMedia[name]&&h('span',{style:{color:'var(--green2)'}},'✅')
+        ))
       ),
+
       mediaStatus&&h('div',{style:{marginTop:8}},
-        h(ProgBar,{pct:mediaProgress}),
+        h(ProgressBar,{pct:mediaProgress}),
         h('div',{style:{fontSize:12,color:'var(--text2)'}},mediaStatus)
       ),
+
       mediaCount>0&&h('button',{
         className:'btn btn-green btn-sm',
         style:{marginTop:12,opacity:uploadingMedia?0.6:1},
         onClick:uploadAllMedia,
         disabled:uploadingMedia||!connected
-      },uploadingMedia?'Uploading...':'Upload '+mediaCount+' File'+(mediaCount!==1?'s':'')+' to Supabase')
+      },uploadingMedia?'Uploading…':'⬆️ Upload '+mediaCount+' File'+(mediaCount!==1?'s':'')+' to Supabase')
     ),
 
+    // ── ③ CSV Upload ──
     h('div',{className:'glass',style:{padding:16,marginBottom:14}},
-      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)',marginBottom:8}},' Upload Menu CSV'),
-      h('div',{style:dropStyle,
-        onClick:function(){if(csvRef.current)csvRef.current.click();},
-        onDragOver:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
-        onDragLeave:function(e){e.currentTarget.style.background='rgba(201,168,76,.04)';},
-        onDrop:function(e){e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';if(e.dataTransfer.files[0])handleCSV(e.dataTransfer.files[0]);}
+      h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--text1)',marginBottom:8}},'③ Upload Menu CSV'),
+      h('div',{
+        style:dropBase,
+        onClick:()=>csvRef.current&&csvRef.current.click(),
+        onDragOver:e=>{e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.12)';},
+        onDragLeave:e=>e.currentTarget.style.background='rgba(201,168,76,.04)',
+        onDrop:e=>{e.preventDefault();e.currentTarget.style.background='rgba(201,168,76,.04)';if(e.dataTransfer.files[0])handleCSV(e.dataTransfer.files[0]);}
       },
-        h('div',{style:{fontSize:28,marginBottom:4}},parsedRows.length>0?'OK':'CSV'),
+        h('div',{style:{fontSize:30,marginBottom:4}},parsedRows.length>0?'✅':'📄'),
         h('div',{style:{fontSize:14,fontWeight:700,color:'var(--text1)'}},
           parsedRows.length>0?parsedRows.length+' items parsed and ready':'Click to select your CSV file'
         ),
-        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'menu.csv')
+        h('div',{style:{fontSize:11,color:'var(--text3)',marginTop:2}},'menu.csv · UTF-8 encoding')
       ),
-      h('input',{ref:csvRef,type:'file',accept:'.csv,text/csv',style:{display:'none'},
-        onChange:function(e){if(e.target.files[0])handleCSV(e.target.files[0]);}})
+      h('input',{ref:csvRef,type:'file',accept:'.csv,text/csv',
+        style:{display:'none'},onChange:e=>{if(e.target.files[0])handleCSV(e.target.files[0]);}})
     ),
 
+    // ── ④ Preview & Import ──
     parsedRows.length>0&&h('div',{className:'glass',style:{padding:16}},
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}},
-        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:15,color:'var(--text1)'}},' Preview & Import'),
+        h('div',{style:{fontFamily:"'Playfair Display',serif",fontSize:16,color:'var(--text1)'}},'④ Preview & Import'),
         h('div',{style:{display:'flex',gap:8}},
           h('button',{
             className:'btn btn-green btn-sm',
             onClick:importAll,
             disabled:importing||!connected,
             style:{opacity:importing||!connected?0.6:1}
-          },importing?'Importing...':'Import All ('+parsedRows.length+' items)'),
+          },importing?'Importing…':'⚡ Import All ('+parsedRows.length+' items)'),
           h('button',{
             className:'btn btn-gold btn-sm',
-            onClick:function(){setParsedRows([]);setRowStatuses({});setImportProgress(0);setImportStatus('');}
-          },'Clear')
+            onClick:()=>{setParsedRows([]);setRowStatuses({});setImportProgress(0);setImportStatus('');}
+          },'✕ Clear')
         )
       ),
+
       importStatus&&h('div',{style:{marginBottom:12}},
-        h(ProgBar,{pct:importProgress}),
+        h(ProgressBar,{pct:importProgress}),
         h('div',{style:{fontSize:12,color:'var(--text2)'}},importStatus)
       ),
+
       h('div',{style:{overflowX:'auto'}},
         h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
           h('thead',null,
             h('tr',null,
-              ['Name','Price','Category','Image','Video','Triggers','Status'].map(function(col){
-                return h('th',{key:col,style:{background:'var(--green)',color:'white',padding:'8px 10px',textAlign:'left',fontSize:11}},col);
-              })
+              ['Name','Price','Category','Image','Video','Triggers','Status'].map(col=>
+                h('th',{key:col,style:{
+                  background:'var(--green)',color:'white',
+                  padding:'8px 10px',textAlign:'left',fontSize:11,letterSpacing:'.5px'
+                }},col)
+              )
             )
           ),
           h('tbody',null,
-            parsedRows.map(function(row,i){
+            parsedRows.map((row,i)=>{
               const imgFile=row.image_filename||'';
               const vidFile=row.video_filename||'';
               const trigKw=row.trigger_keywords||'';
-              const n=trigKw?trigKw.split(',').filter(function(t){return t.trim();}).length:0;
-              const td={padding:'7px 10px',borderBottom:'1px solid rgba(201,168,76,.15)',verticalAlign:'middle'};
+              const trigCount=trigKw?trigKw.split(',').filter(t=>t.trim()).length:0;
+              const tdStyle={padding:'7px 10px',borderBottom:'1px solid rgba(201,168,76,.15)',verticalAlign:'middle'};
               return h('tr',{key:i},
-                h('td',{style:td},h('strong',null,row.name)),
-                h('td',{style:td},'$'+(row.price||'0')),
-                h('td',{style:td},row.category||'Mains'),
-                h('td',{style:td},imgFile||'—'),
-                h('td',{style:td},vidFile||'—'),
-                h('td',{style:td},n?n+' triggers':'—'),
-                h('td',{style:td},h(SPill,{s:rowStatuses[i]}))
+                h('td',{style:tdStyle},h('strong',null,row.name)),
+                h('td',{style:tdStyle},'$'+(row.price||'0')),
+                h('td',{style:tdStyle},row.category||'Mains'),
+                h('td',{style:tdStyle},imgFile?h(Pill,{text:imgFile,color:'gold'}):'—'),
+                h('td',{style:tdStyle},vidFile?h(Pill,{text:vidFile,color:'blue'}):'—'),
+                h('td',{style:tdStyle},trigCount?h(Pill,{text:'⚡ '+trigCount,color:'navy'}):'—'),
+                h('td',{style:tdStyle},h(StatusPill,{s:rowStatuses[i]}))
               );
             })
           )
