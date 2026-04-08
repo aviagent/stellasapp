@@ -547,15 +547,10 @@ input,textarea,select{font-family:'Lato',sans-serif;font-size:14px}
 }
 .video-overlay video{width:100%;max-width:480px;border-radius:16px;border:2px solid var(--gold)}
 
-/* --- VIDEO -- no controls, no overlay --- */
+/* --- VIDEO --- */
 video{outline:none;-webkit-appearance:none}
-video::-webkit-media-controls{display:none!important}
-video::-webkit-media-controls-enclosure{display:none!important}
-video::-webkit-media-controls-panel{display:none!important}
-video::--webkit-media-controls-play-button{display:none!important}
-video::-webkit-media-controls-start-playback-button{display:none!important}
 .avatar-video-wrap{width:100%;position:relative;background:#000;border-top:2px solid var(--gold);border-bottom:2px solid var(--gold);box-shadow:var(--shadow-glow);overflow:hidden}
-.avatar-video-wrap video{width:100%;height:100%;display:block;object-fit:cover;object-position:top center;pointer-events:none}
+.avatar-video-wrap video{width:100%;height:100%;display:block;object-fit:cover;object-position:top center}
 /* --- IDLE BREATHING -- makes static image feel alive --- */
 @keyframes idleBreathe{
   0%,100%{transform:scale(1) translateY(0);filter:brightness(1)}
@@ -1174,10 +1169,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
       if(myPlayId.current !== id){ v.pause(); return; }
       tryUnlock(v);
     }).catch(e=>{
-      if(myPlayId.current === id){
-        console.warn('[Video] Playback error:', e.message);
-        setVideoErr(true);
-      }
+      console.log('[Video] Autoplay blocked, user can use controls');
     });
   },[playUrl]);
 
@@ -1250,7 +1242,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
   return h('div',{className:'avatar-video-wrap',style:{height}},
     h('video',{
       ref:videoRef,
-      playsInline:true,muted:true,
+      controls:true,playsInline:true,muted:true,
       'webkit-playsinline':'','x-webkit-airplay':'deny',
       disablePictureInPicture:true,disableRemotePlayback:true,
       style:{width:'100%',height:'100%',display:'block',objectFit:'cover',objectPosition:'top center',
