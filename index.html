@@ -549,8 +549,13 @@ input,textarea,select{font-family:'Lato',sans-serif;font-size:14px}
 
 /* --- VIDEO --- */
 video{outline:none;-webkit-appearance:none}
+video::-webkit-media-controls{display:none!important}
+video::-webkit-media-controls-enclosure{display:none!important}
+video::-webkit-media-controls-panel{display:none!important}
+video::-webkit-media-controls-play-button{display:none!important}
+video::-webkit-media-controls-start-playback-button{display:none!important}
 .avatar-video-wrap{width:100%;position:relative;background:#000;border-top:2px solid var(--gold);border-bottom:2px solid var(--gold);box-shadow:var(--shadow-glow);overflow:hidden}
-.avatar-video-wrap video{width:100%;height:100%;display:block;object-fit:cover;object-position:top center}
+.avatar-video-wrap video{width:100%;height:100%;display:block;object-fit:cover;object-position:top center;pointer-events:none}
 /* --- IDLE BREATHING -- makes static image feel alive --- */
 @keyframes idleBreathe{
   0%,100%{transform:scale(1) translateY(0);filter:brightness(1)}
@@ -1159,17 +1164,27 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
     setEnded(false); setVideoErr(false); setMuted(true);
 
     v.pause();
-    v.src = playUrl;
+    v.currentTime = 0;
+    v.src = '';
     v.load();
-    v.loop = effectiveLoop;
-    v.volume = getSavedVolume();
-    v.muted = true;
-    const p = v.play();
-    if(p && p.then) p.then(()=>{
-      if(myPlayId.current !== id){ v.pause(); return; }
-      tryUnlock(v);
-    }).catch(e=>{
-      console.log('[Video] Autoplay blocked, user can use controls');
+    requestAnimationFrame(()=>{
+      if(myPlayId.current !== id) return;
+      v.src = playUrl;
+      v.loop = effectiveLoop;
+      v.volume = getSavedVolume();
+      v.muted = true;
+      const p = v.play();
+      if(p && p.then) p.then(()=>{
+        if(myPlayId.current !== id){ v.pause(); return; }
+        tryUnlock(v);
+        console.log('[Video] Playing:', playUrl.split('/').pop());
+      }).catch(e=>{
+        if(e.name === 'NotAllowedError'){
+          console.log('[Video] Autoplay blocked -- will unmute on tap');
+        } else if(myPlayId.current === id){
+          console.warn('[Video] Playback error:', e.message);
+        }
+      });
     });
   },[playUrl]);
 
@@ -1242,7 +1257,7 @@ function AvatarDisplay({videoUrl,posterUrl,height='62vh',active=false,loop=false
   return h('div',{className:'avatar-video-wrap',style:{height}},
     h('video',{
       ref:videoRef,
-      controls:true,playsInline:true,muted:true,
+      playsInline:true,muted:true,autoPlay:true,
       'webkit-playsinline':'','x-webkit-airplay':'deny',
       disablePictureInPicture:true,disableRemotePlayback:true,
       style:{width:'100%',height:'100%',display:'block',objectFit:'cover',objectPosition:'top center',
