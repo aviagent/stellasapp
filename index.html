@@ -1057,6 +1057,9 @@ function resolveVideoUrl(item) {
   if (filename) {
     const r2Base = store.get('stellas_r2_base','').replace(/\/$/,'');
     if (r2Base) return `${r2Base}/${filename}`;
+    const sbUrl = store.get('stellas_sb_url','').replace(/\/$/,'');
+    const sbBucket = store.get('stellas_sb_bucket','videos')||'videos';
+    if (sbUrl) return `${sbUrl}/storage/v1/object/public/${sbBucket}/${encodeURIComponent(filename)}`;
   }
   return item.videoUrl || '';
 }
@@ -2000,10 +2003,7 @@ function VideoField({videoUrl,videoFilename,onUrlChange,onFilenameChange}){
     const workerUrl=(store.get('stellas_r2_worker','')||'').replace(/\/$/,'');
     const secret=store.get('stellas_r2_secret','');
     if(!workerUrl){
-      // No worker configured -- store as local blob only
-      const data=await readFileAsDataURL(file);
-      onUrlChange(data);onFilenameChange('');
-      setUploadMsg('✓ Stored locally (add Worker URL in Settings to upload to R2)');
+      setUploadMsg('⚠️ Set R2 Worker URL in Settings');
       return;
     }
     setUploading(true);setUploadMsg('Uploading to R2…');
