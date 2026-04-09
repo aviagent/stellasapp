@@ -484,8 +484,8 @@ function idbGetSync(key,defaultVal){return store.get(key+'_cache',defaultVal);}
 
 // -- Supabase REST helpers --------------------------------------
 function sbCfg(){
-  const url=store.get('stellas_sb_url','').replace(/\/$/,'');
-  const key=store.get('stellas_sb_key','');
+  const url=(store.get('stellas_sb_url','')||'https://xorujebgrfaqnpwctkyi.supabase.co').replace(/\/$/,'');
+  const key=store.get('stellas_sb_key','')||'sb_publishable_1UK0HHWj_xpRPLwnAYZeQg_SJ1QXJP5';
   return url&&key?{url,key}:null;
 }
 function sbHeaders(cfg){
@@ -680,26 +680,9 @@ async function loadFAQData(){
 // ==========================================
 // DEFAULT DATA
 // ==========================================
-const DEFAULT_MENU=[
-  {id:1,name:'Sticky Toffee Pudding',price:14,cat:'Desserts',desc:'A warm toffee pudding topped with candied pecans, buttery caramel sauce, whisky crème anglaise, and French vanilla ice cream.',ing:'dates, brown sugar, butter, eggs, flour, pecans, caramel, whisky, cream, vanilla ice cream',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1551024601-bec78aea704b?w=400&q=80',visible:true},
-  {id:2,name:'Spinach & Artichoke Dip',price:17,cat:'Starters',desc:'Creamy blend of spinach, artichoke hearts, parmesan and cream cheese. Served hot with warm tortilla chips.',ing:'spinach, artichoke, parmesan, cream cheese, garlic, chips',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1576021182211-9ea8dced3690?w=400&q=80',visible:true},
-  {id:3,name:'Lemon Basil Salmon',price:32,cat:'Mains',desc:'Atlantic salmon fillet with lemon-basil butter, roasted asparagus, and saffron risotto.',ing:'salmon, lemon, basil, butter, asparagus, arborio rice, saffron, parmesan',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=400&q=80',visible:true},
-  {id:4,name:'Chicken Madeira Rigatoni',price:26,cat:'Mains',desc:'Grilled chicken breast, rigatoni, mushrooms in a rich Madeira wine cream sauce, finished with aged parmesan.',ing:'chicken, rigatoni, mushrooms, Madeira wine, cream, parmesan, shallots',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1621996346565-e3dbc646d9a9?w=400&q=80',visible:true},
-  {id:5,name:'Sangria',price:12,cat:'Drinks',desc:'House red wine sangria with fresh citrus, seasonal fruit, and a hint of brandy. Served over ice.',ing:'red wine, brandy, orange juice, fresh fruit, cinnamon',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=400&q=80',visible:true},
-  {id:6,name:'Truffle Mushroom Flatbread',price:19,cat:'Starters',desc:'Wood-fired flatbread with truffle oil, wild mushrooms, caramelized onions, fontina cheese, and fresh thyme.',ing:'flatbread, truffle oil, cremini mushrooms, onions, fontina, thyme',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400&q=80',visible:true},
-  {id:7,name:'Classic Caesar Salad',price:16,cat:'Salads',desc:'Crisp romaine hearts, house-made Caesar dressing, shaved parmesan, house croutons.',ing:'romaine, parmesan, croutons, Caesar dressing, lemon',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1512852939750-1305098529bf?w=400&q=80',visible:true},
-  {id:8,name:'New York Cheesecake',price:12,cat:'Desserts',desc:'Dense, creamy New York-style cheesecake on a graham cracker crust with berry compote.',ing:'cream cheese, eggs, sugar, graham cracker, butter, mixed berries',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?w=400&q=80',visible:true},
-  {id:9,name:'Espresso Martini',price:15,cat:'Drinks',desc:'Fresh-pulled espresso, premium vodka, Kahlúa, and simple syrup. Shaken cold, served up.',ing:'espresso, vodka, Kahlua, simple syrup, coffee beans',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&q=80',visible:true},
-  {id:10,name:'Prime Ribeye 10oz',price:52,cat:'Mains',desc:'USDA Prime 10oz ribeye, aged 28 days, served with truffle fries, compound butter, and red wine jus.',ing:'prime ribeye, truffle, fries, compound butter, red wine, thyme, garlic',videoUrl:'',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',visible:true},
-];
+const DEFAULT_MENU=[];
 
-const DEFAULT_MESSAGES=[
-  {id:1,type:'welcome',title:"Welcome to Stella's!",body:"Hi! I'm Anna, your AI host. I'm here to help you explore today's menu, answer questions about ingredients, and make your experience amazing. What can I get for you?",imgUrl:'',active:true},
-  {id:2,type:'goodbye',title:'Thanks for visiting!',body:"It was wonderful having you! We hope to see you again soon. Don't forget to check out our weekly specials -- Anna will always be here to help!",imgUrl:'',active:true},
-  {id:3,type:'promo',title:'Happy Hour Special 🍹',body:'Enjoy 50% off all cocktails & appetizers every weekday from 3-6pm!',imgUrl:'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=400&q=80',active:true,slot:'feature1',scheduleStart:'',scheduleEnd:''},
-  {id:4,type:'promo',title:"Chef's Weekly Special ⭐",body:'This week only: Braised Short Rib with truffle mash and charred broccolini. Ask Anna for details!',imgUrl:'https://images.unsplash.com/photo-1558030006-450675393462?w=400&q=80',active:true,slot:'feature2',scheduleStart:'',scheduleEnd:''},
-  {id:5,type:'promo',title:'New Summer Menu 🌿',body:'Fresh seasonal ingredients, new cocktails, and lighter fare for the warm months. Explore our summer picks below!',imgUrl:'https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=400&q=80',active:true,slot:'feature3',scheduleStart:'',scheduleEnd:''},
-];
+const DEFAULT_MESSAGES=[];
 
 // ==========================================
 // ICONS
