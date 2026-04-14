@@ -3969,6 +3969,7 @@ function AdminSettingsPanel({showToast}){
   const[saving,setSaving]=useState(false);
   const[openSection,setOpenSection]=useState('provider');
   const[uploadTest,setUploadTest]=useState('');
+  const[stripeLink,setStripeLink]=useState(()=>localStorage.getItem('stellas_stripe_link')||'');
   const p=k=>v=>setCfg(prev=>({...prev,[k]:v}));
   const pKey=provider=>v=>setCfg(prev=>({...prev,keys:{...prev.keys,[provider]:v}}));
   const providers=Object.entries(AI_PROVIDERS);
@@ -3983,6 +3984,7 @@ function AdminSettingsPanel({showToast}){
     store.set('stellas_sb_key',sbKey.trim());
     store.set('stellas_sb_bucket',sbBucket.trim()||'videos');
     store.set('stellas_home_titles',homeTitles);
+    localStorage.setItem('stellas_stripe_link',stripeLink.trim());
     setTimeout(()=>{
       setSaving(false);
       const provLabel=AI_PROVIDERS[cfg.provider]?.label||cfg.provider;
@@ -4249,6 +4251,15 @@ function AdminSettingsPanel({showToast}){
           style:{marginTop:8,padding:'6px 14px',borderRadius:20,border:'1px solid var(--green2)',background:'rgba(42,90,64,.08)',color:'var(--green2)',fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:"'Lato',sans-serif"}
         },'▶ Test Voice')
       )
+    ),
+
+    h(Accord,{id:'stripe',emoji:'💳',label:'Stripe Payments'},
+      h('div',{style:{fontSize:13,color:'var(--text2)',lineHeight:1.6,marginBottom:14}},'Add a Stripe checkout option. Create a Payment Link at ',h('b',null,'stripe.com/payment-links'),' and paste below.'),
+      h('div',{style:{marginBottom:10}},
+        h('label',{className:'label'},'Stripe Payment Link'),
+        h('input',{value:stripeLink,onChange:e=>setStripeLink(e.target.value),placeholder:'https://buy.stripe.com/…',className:'field'})
+      ),
+      h('div',{style:{fontSize:11,color:'var(--text3)',padding:'8px 10px',background:'rgba(201,168,76,.06)',borderRadius:8}},'Leave blank to hide Stripe option.')
     ),
 
     // -- 8. Backup & Restore --
@@ -4647,7 +4658,10 @@ function TakeoutCartDrawer({cart, setCart, onClose, onCheckout, showToast, onVie
           ),
           h('button',{className:'btn btn-green',style:{width:'100%',fontSize:16,padding:'15px'},onClick:goToInfo},'Continue to Details →')
         ),
-        step==='info'&&h('button',{className:'btn btn-green',style:{width:'100%',fontSize:16,padding:'15px'},onClick:submitOrder},'✓ Place Takeout Order')
+        step==='info'&&h('div',null,
+          h('button',{className:'btn btn-green',style:{width:'100%',fontSize:16,padding:'15px',marginBottom:10},onClick:submitOrder},'🍽 Pay at Restaurant'),
+          (()=>{const sl=localStorage.getItem('stellas_stripe_link')||'';return sl?h('button',{className:'btn',style:{width:'100%',fontSize:16,padding:'15px',background:'#635BFF',color:'white',border:'none',borderRadius:50},onClick:()=>{window.open(sl,'_blank');submitOrder();}},'💳 Pay with Stripe'):null;})()
+        )
       )
     )
   );
